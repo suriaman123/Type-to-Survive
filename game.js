@@ -1,6 +1,5 @@
 // ============================================================
 // TYPE TO SURVIVE — game.js
-// CHUNK 1: canvas setup, avatar upload, menu wiring, idle player render
 // ============================================================
 
 (function () {
@@ -15,6 +14,7 @@
   const avatarPreviewWrap = document.getElementById('avatar-preview-wrap');
   const startBtn = document.getElementById('start-btn');
   const hud = document.getElementById('hud');
+  const waveInfoEl = document.getElementById('wave-info');
 
   // ---------- canvas sizing ----------
   let W = 0, H = 0, DPR = Math.max(1, window.devicePixelRatio || 1);
@@ -38,6 +38,8 @@
     x: 0, y: 0,
     radius: 34,
     avatarImage: null,
+    maxHp: 10,
+    hp: 10,
   };
 
   function centerPlayer() {
@@ -160,13 +162,298 @@
   }
   idleLoop();
 
-  // ---------- start button (placeholder until chunk 2+) ----------
+  // ============================================================
+  // CHUNK 2: enemy spawning, movement, rendering
+  // ============================================================
+
+  // Basic word bank for now — difficulty tiering arrives in chunk 5.
+  const WORD_BANK = [
+    'cat', 'dog', 'run', 'jump', 'fire', 'wolf', 'rock', 'wave',
+    'storm', 'blade', 'shadow', 'ember', 'frost', 'spike', 'crawl',
+    'venom', 'rust', 'howl', 'grit', 'fang'
+  ];
+
+  function randomWord() {
+    return WORD_BANK[Math.floor(Math.random() * WORD_BANK.length)];
+  }
+
+  // ---------- enemy entity ----------
+  // Each enemy: { x, y, word, speed, radius, color, dead }
+  let enemies = [];
+
+  // ---------- early-game ramp ----------
+  // We track elapsed survival time (seconds) and derive spawn interval +
+  // enemy speed from it. This is a *gentle* early ramp distinct from the
+  // full difficulty system (word tiers, enemy HP, contact damage) that
+  // lands in chunk 5 — here we only care about "how many, how fast".
+  let elapsed = 0; // seconds since game start, reset on startGame()
+
+  function currentSpawnInterval() {
+    // starts very sparse (one enemy every ~3.2s alone on screen),
+    // tightens down to a floor of ~0.5s by the 2-minute mark.
+    const t = elapsed / 120; // 0..1 over first 2 minutes
+    const clamped = Math.min(1, t);
+    const start = 3.2, floor = 0.5;
+    const interval = start - (start - floor) * clamped;
+    // small randomness so it doesn't feel metronomic
+    return interval * (0.85 + Math.random() * 0.3);
+  }
+
+  function currentEnemySpeed() {
+    // starts slow (28px/s, easy to read/react to), ramps to 95px/s by ~3min
+    const t = elapsed / 180;
+    const clamped = Math.min(1, t);
+    const start = 28, cap = 95;
+    const base = start + (cap - start) * clamped;
+    return base + Math.random() * 8;
+  }
+
+  function spawnEnemy() {
+    // spawn on a circle comfortably beyond the visible edge so they
+    // visibly walk on-screen rather than popping in
+    const maxDim = Math.max(W, H);
+    const spawnRadius = maxDim * 0.62 + 60;
+    const angle = Math.random() * Math.PI * 2;
+    const x = player.x + Math.cos(angle) * spawnRadius;
+    const y = player.y + Math.sin(angle) * spawnRadius;
+
+    enemies.push({
+      x, y,
+      word: randomWord(),
+      speed: currentEnemySpeed(),
+      radius: 18,
+      color: '#FF3B5C',
+      dmg: 1, // contact damage to player; scales with difficulty in chunk 5
+      dead: false,
+    });
+  }
+
+  // ---------- spawn timing ----------
+  let spawnTimer = 0;
+  let nextSpawnIn = 0;
+
+  function rollNextSpawn() {
+    nextSpawnIn = currentSpawnInterval();
+  }
+
+  function updateSpawning(dt) {
+    elapsed += dt;
+    spawnTimer += dt;
+    if (spawnTimer >= nextSpawnIn) {
+      spawnTimer = 0;
+      rollNextSpawn();
+      spawnEnemy();
+    }
+  }
+
+  // ---------- player damage state ----------
+  let gameOverTriggered = false;
+  let flashTimer = 0; // counts down after a hit, drives the red screen flash
+  const dmgFlashEl = document.getElementById('dmg-flash');
+
+  function takeDamage(amount) {
+    if (gameOverTriggered) return;
+    player.hp = Math.max(0, player.hp - amount);
+    flashTimer = 0.35; // seconds the flash stays visible, fades out
+    renderHearts();
+    if (player.hp <= 0) {
+      triggerGameOver();
+    }
+  }
+
+  function updateFlash(dt) {
+    if (flashTimer > 0) {
+      flashTimer = Math.max(0, flashTimer - dt);
+      dmgFlashEl.style.opacity = (flashTimer / 0.35).toFixed(2);
+    } else {
+      dmgFlashEl.style.opacity = 0;
+    }
+  }
+
+  // ---------- enemy movement ----------
+  function updateEnemies(dt) {
+    for (const e of enemies) {
+      if (e.dead) continue;
+      const dx = player.x - e.x;
+      const dy = player.y - e.y;
+      const dist = Math.hypot(dx, dy);
+
+      // reaching the player: deal contact damage, enemy is consumed.
+      if (dist <= player.radius + e.radius) {
+        e.dead = true;
+        takeDamage(e.dmg);
+        continue;
+      }
+
+      const vx = (dx / dist) * e.speed;
+      const vy = (dy / dist) * e.speed;
+      e.x += vx * dt;
+      e.y += vy * dt;
+    }
+    // prune dead enemies
+    enemies = enemies.filter(e => !e.dead);
+  }
+
+  // ---------- enemy rendering ----------
+  function drawWordPill(text, x, y) {
+    ctx.font = '600 14px "JetBrains Mono", monospace';
+    const paddingX = 10;
+    const textWidth = ctx.measureText(text).width;
+    const pillW = textWidth + paddingX * 2;
+    const pillH = 22;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(28,34,48,0.85)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    roundRect(ctx, x - pillW / 2, y - pillH / 2, pillW, pillH, 6);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#E7ECF3';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x, y + 1);
+    ctx.restore();
+  }
+
+  function roundRect(c, x, y, w, h, r) {
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+  }
+
+  function drawEnemies() {
+    for (const e of enemies) {
+      // body: simple flat triangle pointed toward the player to read as
+      // "incoming" at a glance, per the flat-shape art direction.
+      const dx = player.x - e.x;
+      const dy = player.y - e.y;
+      const angle = Math.atan2(dy, dx);
+
+      ctx.save();
+      ctx.translate(e.x, e.y);
+      ctx.rotate(angle);
+      ctx.beginPath();
+      ctx.moveTo(e.radius, 0);
+      ctx.lineTo(-e.radius * 0.8, e.radius * 0.75);
+      ctx.lineTo(-e.radius * 0.8, -e.radius * 0.75);
+      ctx.closePath();
+      ctx.fillStyle = e.color;
+      ctx.fill();
+      ctx.restore();
+
+      drawWordPill(e.word, e.x, e.y - e.radius - 18);
+    }
+  }
+
+  // ---------- HUD: hearts ----------
+  const hpRowEl = document.getElementById('hp-row');
+
+  function renderHearts() {
+    hpRowEl.innerHTML = '';
+    for (let i = 0; i < player.maxHp; i++) {
+      const heart = document.createElement('div');
+      heart.className = 'heart' + (i < player.hp ? '' : ' empty');
+      hpRowEl.appendChild(heart);
+    }
+  }
+
+  // ---------- HUD: timer ----------
+  const timerEl = document.getElementById('timer');
+
+  function formatTime(totalSeconds) {
+    const m = Math.floor(totalSeconds / 60);
+    const s = Math.floor(totalSeconds % 60);
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  }
+
+  // ---------- score (basic placeholder; real scoring rules can refine later) ----------
+  let score = 0;
+  let kills = 0;
+  const scoreValEl = document.getElementById('score-val');
+
+  // ---------- game over ----------
+  const gameOverOverlay = document.getElementById('gameover-overlay');
+  const goTimeEl = document.getElementById('go-time');
+  const goScoreEl = document.getElementById('go-score');
+  const goKillsEl = document.getElementById('go-kills');
+  const restartBtn = document.getElementById('restart-btn');
+  const newBestTag = document.getElementById('new-best-tag');
+
+  function triggerGameOver() {
+    if (gameOverTriggered) return;
+    gameOverTriggered = true;
+    running = false;
+
+    goTimeEl.textContent = formatTime(elapsed);
+    goScoreEl.textContent = score;
+    goKillsEl.textContent = kills;
+    newBestTag.classList.add('hidden'); // best-score comparison lands with persistence chunk
+
+    hud.classList.add('hidden');
+    gameOverOverlay.classList.remove('hidden');
+  }
+
+  restartBtn.addEventListener('click', () => {
+    gameOverOverlay.classList.add('hidden');
+    hud.classList.remove('hidden');
+    startGame();
+  });
+  let running = false;
+  let lastTime = 0;
+
+  function gameLoop(timestamp) {
+    if (!running) return;
+    const dt = Math.min(0.05, (timestamp - lastTime) / 1000 || 0); // clamp dt, skip huge jumps
+    lastTime = timestamp;
+
+    updateSpawning(dt);
+    updateEnemies(dt);
+    updateFlash(dt);
+
+    drawBackground();
+    drawEnemies();
+    drawPlayer();
+
+    timerEl.textContent = formatTime(elapsed);
+    scoreValEl.textContent = score;
+    waveInfoEl.textContent = `enemies on screen: ${enemies.length}`;
+
+    requestAnimationFrame(gameLoop);
+  }
+
+  function startGame() {
+    // reset state
+    enemies = [];
+    elapsed = 0;
+    spawnTimer = 0;
+    rollNextSpawn();
+    centerPlayer();
+
+    player.hp = player.maxHp;
+    score = 0;
+    kills = 0;
+    gameOverTriggered = false;
+    flashTimer = 0;
+    dmgFlashEl.style.opacity = 0;
+    renderHearts();
+
+    running = true;
+    if (idleAnimId) cancelAnimationFrame(idleAnimId);
+    lastTime = performance.now();
+    requestAnimationFrame(gameLoop);
+  }
+
+  // ---------- start button ----------
   startBtn.addEventListener('click', () => {
     menuOverlay.classList.add('hidden');
     hud.classList.remove('hidden');
-    // Game systems (spawning, typing, HP, timer, etc.) land in later chunks.
-    // For now this just confirms the transition works end-to-end.
-    console.log('Game start pressed. Avatar uploaded:', !!player.avatarImage);
+    startGame();
   });
 
 })();
