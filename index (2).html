@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Type to Survive</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0B0E14;
+    --bg-deep: #06080D;
+    --panel: #1C2230;
+    --panel-edge: #2A3245;
+    --amber: #FFB627;
+    --amber-dim: #8a6a1f;
+    --red: #FF3B5C;
+    --red-dim: #5c1f2b;
+    --cyan: #3FE0D0;
+    --cyan-dim: #1f6b63;
+    --text: #E7ECF3;
+    --text-dim: #6b7488;
+    --mono: 'JetBrains Mono', 'Courier New', monospace;
+  }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: var(--bg-deep);
+    font-family: var(--mono);
+    color: var(--text);
+    overflow: hidden;
+    user-select: none;
+  }
+
+  #app {
+    position: relative;
+    width: 100%;
+    height: 100vh;
+    background:
+      radial-gradient(ellipse 120% 80% at 50% 50%, var(--bg) 0%, var(--bg-deep) 100%);
+  }
+
+  canvas#arena {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  /* ---------- HUD ---------- */
+  #hud {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 10;
+  }
+
+  .hud-corner {
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  #hud-tl { top: 18px; left: 18px; }
+  #hud-tr { top: 18px; right: 18px; align-items: flex-end; }
+
+  #timer-wrap {
+    position: absolute;
+    top: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+  }
+
+  #timer {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: var(--text);
+    background: rgba(28,34,48,0.55);
+    border: 1px solid var(--panel-edge);
+    border-radius: 10px;
+    padding: 6px 18px;
+    backdrop-filter: blur(4px);
+    min-width: 110px;
+  }
+
+  .label {
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 2px;
+  }
+
+  #hp-row {
+    display: flex;
+    gap: 5px;
+  }
+
+  .heart {
+    width: 16px;
+    height: 16px;
+    background: var(--red);
+    clip-path: polygon(50% 15%, 61% 4%, 75% 4%, 88% 15%, 88% 32%, 50% 70%, 12% 32%, 12% 15%, 25% 4%, 39% 4%);
+    box-shadow: 0 0 6px rgba(255,59,92,0.6);
+  }
+  .heart.empty {
+    background: transparent;
+    border: 1.5px solid var(--red-dim);
+    box-shadow: none;
+    clip-path: none;
+    border-radius: 3px;
+    width: 13px;
+    height: 13px;
+    margin: 1.5px;
+  }
+
+  #score-val, #sp-val {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--cyan);
+  }
+
+  #sp-pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(63,224,208,0.08);
+    border: 1px solid var(--cyan-dim);
+    border-radius: 8px;
+    padding: 4px 10px;
+  }
+
+  #wave-info {
+    font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 0.5px;
+  }
+
+  /* ---------- typing buffer indicator ---------- */
+  #typed-buffer {
+    position: absolute;
+    bottom: 28px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: 3px;
+    color: var(--amber);
+    min-height: 28px;
+    text-shadow: 0 0 12px rgba(255,182,39,0.5);
+  }
+
+  /* ---------- overlays ---------- */
+  .overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(6,8,13,0.86);
+    backdrop-filter: blur(6px);
+    z-index: 50;
+    flex-direction: column;
+    gap: 24px;
+    text-align: center;
+    padding: 24px;
+  }
+
+  .hidden { display: none !important; }
+
+  h1.title {
+    font-size: clamp(36px, 7vw, 64px);
+    font-weight: 800;
+    margin: 0;
+    letter-spacing: -1px;
+    color: var(--text);
+  }
+  h1.title .accent { color: var(--amber); }
+
+  .subtitle {
+    font-size: 14px;
+    color: var(--text-dim);
+    max-width: 480px;
+    line-height: 1.6;
+    margin: 0;
+  }
+
+  .subtitle kbd {
+    background: var(--panel);
+    border: 1px solid var(--panel-edge);
+    border-radius: 4px;
+    padding: 1px 6px;
+    color: var(--amber);
+    font-size: 12px;
+  }
+
+  #avatar-preview-wrap {
+    position: relative;
+    width: 110px;
+    height: 110px;
+    border-radius: 50%;
+    border: 3px solid var(--amber);
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--panel);
+    box-shadow: 0 0 30px rgba(255,182,39,0.25);
+    cursor: pointer;
+  }
+  #avatar-preview-wrap img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  #avatar-preview-wrap .avatar-placeholder-icon {
+    font-size: 38px;
+    color: var(--amber-dim);
+  }
+  #avatar-upload-hint {
+    font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 0.5px;
+  }
+  #avatar-input { display: none; }
+
+  .btn {
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 18px;
+    letter-spacing: 1px;
+    border-radius: 12px;
+    border: none;
+    cursor: pointer;
+    padding: 16px 40px;
+    color: var(--bg-deep);
+    background: var(--amber);
+    box-shadow: 0 0 0 0 rgba(255,182,39,0.5);
+    transition: transform 0.12s ease, box-shadow 0.2s ease;
+  }
+  .btn:hover { transform: translateY(-2px) scale(1.02); box-shadow: 0 6px 24px rgba(255,182,39,0.35); }
+  .btn:active { transform: translateY(0) scale(0.98); }
+  .btn.btn-ghost {
+    background: transparent;
+    color: var(--text);
+    border: 1.5px solid var(--panel-edge);
+    font-size: 13px;
+    padding: 10px 22px;
+  }
+  .btn.btn-ghost:hover { border-color: var(--cyan); color: var(--cyan); box-shadow: none; }
+
+  #best-stats {
+    display: flex;
+    gap: 28px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  #best-stats b { color: var(--cyan); font-size: 16px; display: block; }
+
+  /* ---- level up overlay ---- */
+  #levelup-overlay h2, #cardpick-overlay h2, #gameover-overlay h2 {
+    font-size: 26px;
+    margin: 0;
+    color: var(--cyan);
+    letter-spacing: 0.5px;
+  }
+  #skillpoint-count {
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+  #skillpoint-count b { color: var(--amber); }
+
+  .skill-grid {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .skill-card {
+    width: 170px;
+    background: var(--panel);
+    border: 1.5px solid var(--panel-edge);
+    border-radius: 14px;
+    padding: 18px 14px;
+    cursor: pointer;
+    transition: border-color 0.15s, transform 0.15s;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: center;
+  }
+  .skill-card:hover { border-color: var(--amber); transform: translateY(-4px); }
+  .skill-card .icon { font-size: 30px; }
+  .skill-card .name { font-weight: 700; font-size: 14px; }
+  .skill-card .desc { font-size: 11px; color: var(--text-dim); line-height: 1.4; }
+  .skill-card .lvl { font-size: 10px; color: var(--cyan); letter-spacing: 1px; }
+
+  /* ---- card pick overlay ---- */
+  .card-grid {
+    display: flex;
+    gap: 18px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .pick-card {
+    width: 190px;
+    background: linear-gradient(160deg, var(--panel), #161b27);
+    border: 1.5px solid var(--panel-edge);
+    border-radius: 16px;
+    padding: 22px 16px;
+    cursor: pointer;
+    transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    align-items: center;
+    text-align: center;
+  }
+  .pick-card:hover {
+    border-color: var(--cyan);
+    transform: translateY(-6px);
+    box-shadow: 0 10px 30px rgba(63,224,208,0.18);
+  }
+  .pick-card .icon { font-size: 36px; }
+  .pick-card .name { font-weight: 700; font-size: 15px; color: var(--text); }
+  .pick-card .desc { font-size: 11.5px; color: var(--text-dim); line-height: 1.5; }
+
+  /* ---- game over ---- */
+  #gameover-stats {
+    display: flex;
+    gap: 30px;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+  #gameover-stats b { color: var(--red); font-size: 22px; display: block; }
+  #gameover-stats.new-best b { color: var(--cyan); }
+  #new-best-tag {
+    font-size: 12px;
+    color: var(--cyan);
+    letter-spacing: 1px;
+    font-weight: 700;
+  }
+
+  /* boss banner */
+  #boss-banner {
+    position: absolute;
+    top: 70px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 20;
+    text-align: center;
+    pointer-events: none;
+  }
+  #boss-banner .bb-title {
+    font-size: 20px;
+    font-weight: 800;
+    color: var(--red);
+    letter-spacing: 2px;
+    text-shadow: 0 0 14px rgba(255,59,92,0.6);
+  }
+  #boss-hp-wrap {
+    width: 320px;
+    height: 10px;
+    background: var(--panel);
+    border: 1px solid var(--panel-edge);
+    border-radius: 6px;
+    overflow: hidden;
+    margin-top: 6px;
+  }
+  #boss-hp-bar {
+    height: 100%;
+    width: 100%;
+    background: linear-gradient(90deg, var(--red), #ff7a8e);
+    transition: width 0.15s ease;
+  }
+
+  /* flash effect for damage */
+  #dmg-flash {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse at center, transparent 40%, rgba(255,59,92,0.35) 100%);
+    opacity: 0;
+    pointer-events: none;
+    z-index: 15;
+  }
+
+  @media (max-width: 600px) {
+    h1.title { font-size: 38px; }
+    #avatar-preview-wrap { width: 88px; height: 88px; }
+    .skill-card, .pick-card { width: 140px; }
+    #timer { font-size: 20px; padding: 5px 12px; }
+    #boss-hp-wrap { width: 220px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <canvas id="arena"></canvas>
+  <div id="dmg-flash"></div>
+
+  <div id="hud" class="hidden">
+    <div class="hud-corner" id="hud-tl">
+      <div class="label">Hit Points</div>
+      <div id="hp-row"></div>
+    </div>
+    <div class="hud-corner" id="hud-tr">
+      <div class="label">Score</div>
+      <div id="score-val">0</div>
+      <div id="sp-pill"><span class="label" style="margin:0;">SP</span><span id="sp-val">0</span></div>
+    </div>
+    <div id="timer-wrap">
+      <div id="timer">00:00</div>
+      <div id="wave-info"></div>
+    </div>
+    <div id="typed-buffer"></div>
+  </div>
+
+  <div id="boss-banner" class="hidden">
+    <div class="bb-title">⚠ BOSS INCOMING ⚠</div>
+    <div id="boss-hp-wrap"><div id="boss-hp-bar"></div></div>
+  </div>
+
+  <!-- MENU -->
+  <div id="menu-overlay" class="overlay">
+    <input type="file" id="avatar-input" accept="image/*">
+    <div id="avatar-preview-wrap">
+      <span class="avatar-placeholder-icon">＋</span>
+    </div>
+    <div id="avatar-upload-hint">tap the circle to upload your avatar</div>
+    <h1 class="title">TYPE TO <span class="accent">SURVIVE</span></h1>
+    <p class="subtitle">Enemies close in from every side carrying a word. Type it exactly to fire. Survive the clock, level up every minute, and crack each boss with a full sentence.</p>
+    <button class="btn" id="start-btn">START</button>
+    <div id="best-stats">
+      <div><b id="best-time">00:00</b>BEST TIME</div>
+      <div><b id="best-score">0</b>BEST SCORE</div>
+    </div>
+  </div>
+
+  <!-- LEVEL UP -->
+  <div id="levelup-overlay" class="overlay hidden">
+    <h2>SKILL POINT EARNED</h2>
+    <div id="skillpoint-count">You have <b id="sp-available">1</b> skill point<span id="sp-plural">s</span> to spend</div>
+    <div class="skill-grid">
+      <div class="skill-card" data-skill="health">
+        <div class="icon">❤</div>
+        <div class="name">Vitality</div>
+        <div class="desc">+2 max HP, heal 2 now</div>
+        <div class="lvl">LV <span id="lvl-health">0</span></div>
+      </div>
+      <div class="skill-card" data-skill="damage">
+        <div class="icon">⚡</div>
+        <div class="name">Power</div>
+        <div class="desc">+1 damage per shot</div>
+        <div class="lvl">LV <span id="lvl-damage">0</span></div>
+      </div>
+      <div class="skill-card" data-skill="slow">
+        <div class="icon">❄</div>
+        <div class="name">Chill Field</div>
+        <div class="desc">-8% enemy speed, stacking</div>
+        <div class="lvl">LV <span id="lvl-slow">0</span></div>
+      </div>
+    </div>
+    <button class="btn btn-ghost hidden" id="levelup-continue">CONTINUE</button>
+  </div>
+
+  <!-- CARD PICK -->
+  <div id="cardpick-overlay" class="overlay hidden">
+    <h2>BOSS DEFEATED</h2>
+    <div class="subtitle">Choose one upgrade to carry forward.</div>
+    <div class="card-grid" id="card-grid"></div>
+  </div>
+
+  <!-- GAME OVER -->
+  <div id="gameover-overlay" class="overlay hidden">
+    <h2 style="color:var(--red);">YOU DIED</h2>
+    <div id="new-best-tag" class="hidden">NEW BEST</div>
+    <div id="gameover-stats">
+      <div><b id="go-time">00:00</b>TIME SURVIVED</div>
+      <div><b id="go-score">0</b>FINAL SCORE</div>
+      <div><b id="go-kills">0</b>ENEMIES DOWNED</div>
+    </div>
+    <button class="btn" id="restart-btn">PLAY AGAIN</button>
+  </div>
+</div>
+
+<script src="game.js"></script>
+</body>
+</html>
