@@ -192,22 +192,80 @@
   // CHUNK 2: enemy spawning, movement, rendering
   // ============================================================
 
-  // Basic word bank for now — difficulty tiering arrives in chunk 5.
-  const WORD_BANK = [
-    'cat', 'dog', 'run', 'jump', 'fire', 'wolf', 'rock', 'wave',
-    'storm', 'blade', 'shadow', 'ember', 'frost', 'spike', 'crawl',
-    'venom', 'rust', 'howl', 'grit', 'fang'
+  // ============================================================
+  // CHUNK 5: difficulty scaling — tiered words, enemy HP/speed/damage
+  // ============================================================
+
+  // Word bank tiered by difficulty: tier 0 is short/common, higher tiers
+  // get longer and less common. The active tier widens over time so easy
+  // words keep showing up too (avoids an abrupt jump), but harder words
+  // mix in increasingly.
+  const WORD_TIERS = [
+    // tier 0 — first ~1 minute: short, common
+    ['cat', 'dog', 'run', 'jump', 'fire', 'wolf', 'rock', 'wave'],
+    // tier 1 — ~1-3 min
+    ['storm', 'blade', 'shadow', 'ember', 'frost', 'spike', 'crawl', 'venom'],
+    // tier 2 — ~3-5 min
+    ['rust', 'howl', 'grit', 'fang', 'gnaw', 'thorn', 'wraith', 'molten'],
+    // tier 3 — ~5-8 min
+    ['scorch', 'fracture', 'serrated', 'glacier', 'crimson', 'hollow', 'tremor'],
+    // tier 4 — ~8-12 min
+    ['ravenous', 'obsidian', 'cataclysm', 'desolate', 'writhing', 'malicious'],
+    // tier 5 — 12+ min, longest/rarest
+    ['annihilate', 'reverberate', 'incandescent', 'subterranean', 'malevolence'],
   ];
+
+  function currentMaxWordTier() {
+    // unlock a new tier roughly every 2 minutes, capped at the last tier
+    const tier = Math.floor(elapsed / 120);
+    return Math.min(tier, WORD_TIERS.length - 1);
+  }
+
+  function buildActiveWordPool() {
+    // pool includes every tier up to the current max, so easy words never
+    // fully disappear — they just get outnumbered by harder ones over time
+    const maxTier = currentMaxWordTier();
+    let pool = [];
+    for (let t = 0; t <= maxTier; t++) {
+      pool = pool.concat(WORD_TIERS[t]);
+    }
+    return pool;
+  }
 
   function randomWord(excludeWords) {
     const exclude = excludeWords || [];
-    const pool = WORD_BANK.filter(w => !exclude.includes(w));
-    const useable = pool.length > 0 ? pool : WORD_BANK; // fallback if bank exhausted
+    const fullPool = buildActiveWordPool();
+    const pool = fullPool.filter(w => !exclude.includes(w));
+    const useable = pool.length > 0 ? pool : fullPool; // fallback if pool exhausted
     return useable[Math.floor(Math.random() * useable.length)];
   }
 
   function wordsInPlay() {
     return enemies.filter(e => !e.dead).map(e => e.word);
+  }
+
+  // ---------- enemy stat scaling ----------
+  // All scaling is a function of elapsed survival time. Curves are tuned
+  // to feel gentle for the first ~1-2 minutes (matching the chunk-2 ramp)
+  // then continue scaling indefinitely with soft caps so the game stays
+  // readable/fair even after a very long survival run.
+
+  function currentEnemyMaxHp() {
+    // +1 max HP every 2 minutes, capped at 6 (so even very long runs stay
+    // at "a handful of words", not absurd bullet-sponge enemies)
+    const steps = Math.floor(elapsed / 120);
+    return Math.min(1 + steps, 6);
+  }
+
+  function currentEnemyContactDamage() {
+    // +1 contact damage every 3 minutes, capped at 5
+    const steps = Math.floor(elapsed / 180);
+    return Math.min(1 + steps, 5);
+  }
+
+  function currentDifficultyLabel() {
+    // human-readable difficulty tier for the HUD, purely informational
+    return Math.floor(elapsed / 60) + 1; // "level" ticks up once per minute
   }
 
   // ---------- enemy entity ----------
@@ -222,22 +280,41 @@
   let elapsed = 0; // seconds since game start, reset on startGame()
 
   function currentSpawnInterval() {
-    // starts very sparse (one enemy every ~3.2s alone on screen),
-    // tightens down to a floor of ~0.5s by the 2-minute mark.
-    const t = elapsed / 120; // 0..1 over first 2 minutes
+    // starts very sparse (one enemy every ~3.2s alone on screen), tightens
+    // down toward a floor over the first ~4 minutes, then keeps inching
+    // down very slowly forever (long-run difficulty) without ever going
+    // below a hard floor that would make it unfair/unreadable.
+    const t = elapsed / 240; // 0..1 ramp over first 4 minutes
     const clamped = Math.min(1, t);
-    const start = 3.2, floor = 0.5;
-    const interval = start - (start - floor) * clamped;
+    const start = 3.2, midFloor = 0.45;
+    let interval = start - (start - midFloor) * clamped;
+
+    // slow long-run tightening past the 4-minute mark
+    if (elapsed > 240) {
+      const extraMinutes = (elapsed - 240) / 60;
+      interval -= extraMinutes * 0.01; // tiny extra tightening per minute
+    }
+    interval = Math.max(0.28, interval); // hard floor
+
     // small randomness so it doesn't feel metronomic
     return interval * (0.85 + Math.random() * 0.3);
   }
 
   function currentEnemySpeed() {
-    // starts slow (28px/s, easy to read/react to), ramps to 95px/s by ~3min
+    // starts slow (28px/s, easy to read/react to), ramps to a base cap of
+    // ~95px/s by ~3min, then keeps creeping up slowly forever with a hard
+    // ceiling so long runs stay theoretically dodgeable/readable.
     const t = elapsed / 180;
     const clamped = Math.min(1, t);
-    const start = 28, cap = 95;
-    const base = start + (cap - start) * clamped;
+    const start = 28, midCap = 95;
+    let base = start + (midCap - start) * clamped;
+
+    if (elapsed > 180) {
+      const extraMinutes = (elapsed - 180) / 60;
+      base += extraMinutes * 3; // gentle long-run creep
+    }
+    base = Math.min(base, 160); // hard ceiling
+
     return base + Math.random() * 8;
   }
 
@@ -259,6 +336,7 @@
     const x = player.x + dirX * spawnRadius;
     const y = player.y + dirY * spawnRadius;
 
+    const maxHp = currentEnemyMaxHp();
     enemies.push({
       id: enemyIdCounter++,
       x, y,
@@ -266,9 +344,9 @@
       speed: currentEnemySpeed(),
       radius: 18,
       color: '#FF3B5C',
-      dmg: 1, // contact damage to player; scales with difficulty in chunk 5
-      maxHp: 1, // multi-hit enemies (2-3 words to kill) arrive with chunk 5 scaling
-      hp: 1,
+      dmg: currentEnemyContactDamage(),
+      maxHp: maxHp,
+      hp: maxHp,
       dead: false,
     });
   }
@@ -571,6 +649,23 @@
     const pillW = textWidth + paddingX * 2;
     const pillH = 22;
 
+    // HP pips above the pill for multi-hit enemies, so the player can see
+    // how many words/shots remain on a tougher target at a glance
+    if (enemy.maxHp > 1) {
+      const pipR = 3;
+      const pipGap = 9;
+      const totalW = (enemy.maxHp - 1) * pipGap;
+      let pipX = x - totalW / 2;
+      const pipY = y - pillH / 2 - 9;
+      for (let i = 0; i < enemy.maxHp; i++) {
+        ctx.beginPath();
+        ctx.arc(pipX, pipY, pipR, 0, Math.PI * 2);
+        ctx.fillStyle = i < enemy.hp ? '#FF3B5C' : 'rgba(255,59,92,0.2)';
+        ctx.fill();
+        pipX += pipGap;
+      }
+    }
+
     ctx.save();
     ctx.fillStyle = isLocked ? 'rgba(255,182,39,0.16)' : 'rgba(28,34,48,0.85)';
     ctx.strokeStyle = isLocked ? '#FFB627' : 'rgba(255,255,255,0.08)';
@@ -638,7 +733,8 @@
       }
       ctx.restore();
 
-      drawWordPill(e, e.x, e.y - e.radius - 18);
+      const pillOffset = e.maxHp > 1 ? e.radius + 26 : e.radius + 18;
+      drawWordPill(e, e.x, e.y - pillOffset);
     }
   }
 
@@ -719,7 +815,7 @@
 
     timerEl.textContent = formatTime(elapsed);
     scoreValEl.textContent = score;
-    waveInfoEl.textContent = `enemies on screen: ${enemies.length}`;
+    waveInfoEl.textContent = `lvl ${currentDifficultyLabel()} · enemies: ${enemies.length}`;
 
     requestAnimationFrame(gameLoop);
   }
