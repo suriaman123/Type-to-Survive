@@ -19,16 +19,41 @@
   // ---------- canvas sizing ----------
   let W = 0, H = 0, DPR = Math.max(1, window.devicePixelRatio || 1);
 
+  // visualViewport reports the space actually visible on screen — on
+  // mobile, when the on-screen keyboard opens, its height shrinks to
+  // exclude the keyboard area. window.innerHeight does NOT reliably do
+  // this across browsers, so we prefer visualViewport when available and
+  // fall back to window dimensions otherwise (desktop, older browsers).
+  function getViewportSize() {
+    if (window.visualViewport) {
+      return {
+        w: window.visualViewport.width,
+        h: window.visualViewport.height,
+      };
+    }
+    return { w: window.innerWidth, h: window.innerHeight };
+  }
+
   function resizeCanvas() {
-    W = window.innerWidth;
-    H = window.innerHeight;
+    const size = getViewportSize();
+    W = size.w;
+    H = size.h;
     canvas.width = Math.floor(W * DPR);
     canvas.height = Math.floor(H * DPR);
     canvas.style.width = W + 'px';
     canvas.style.height = H + 'px';
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    // keep #app (and therefore the HUD overlay) sized to the space that's
+    // actually visible above the on-screen keyboard, not the full window
+    document.getElementById('app').style.setProperty('--app-h', H + 'px');
+    // keep the player centered in the newly-available space (e.g. when the
+    // keyboard opens/closes mid-game) rather than leaving it offset
+    if (typeof centerPlayer === 'function') centerPlayer();
   }
   window.addEventListener('resize', resizeCanvas);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', resizeCanvas);
+  }
   resizeCanvas();
 
   // ---------- avatar state ----------
@@ -174,8 +199,15 @@
     'venom', 'rust', 'howl', 'grit', 'fang'
   ];
 
-  function randomWord() {
-    return WORD_BANK[Math.floor(Math.random() * WORD_BANK.length)];
+  function randomWord(excludeWords) {
+    const exclude = excludeWords || [];
+    const pool = WORD_BANK.filter(w => !exclude.includes(w));
+    const useable = pool.length > 0 ? pool : WORD_BANK; // fallback if bank exhausted
+    return useable[Math.floor(Math.random() * useable.length)];
+  }
+
+  function wordsInPlay() {
+    return enemies.filter(e => !e.dead).map(e => e.word);
   }
 
   // ---------- enemy entity ----------
@@ -212,18 +244,25 @@
   let enemyIdCounter = 1;
 
   function spawnEnemy() {
-    // spawn on a circle comfortably beyond the visible edge so they
-    // visibly walk on-screen rather than popping in
-    const maxDim = Math.max(W, H);
-    const spawnRadius = maxDim * 0.62 + 60;
+    // Spawn just beyond whichever screen edge the angle points toward,
+    // so enemies appear close to off-screen and walk into view quickly
+    // instead of crawling for a long time across empty space outside
+    // the viewport (which is what made them feel "stuck off-screen").
     const angle = Math.random() * Math.PI * 2;
-    const x = player.x + Math.cos(angle) * spawnRadius;
-    const y = player.y + Math.sin(angle) * spawnRadius;
+    const dirX = Math.cos(angle), dirY = Math.sin(angle);
+    const margin = 50; // how far past the edge they spawn, in px
+    // distance from center to the screen edge along this direction
+    const tx = dirX !== 0 ? (W / 2) / Math.abs(dirX) : Infinity;
+    const ty = dirY !== 0 ? (H / 2) / Math.abs(dirY) : Infinity;
+    const edgeDist = Math.min(tx, ty);
+    const spawnRadius = edgeDist + margin;
+    const x = player.x + dirX * spawnRadius;
+    const y = player.y + dirY * spawnRadius;
 
     enemies.push({
       id: enemyIdCounter++,
       x, y,
-      word: randomWord(),
+      word: randomWord(wordsInPlay()),
       speed: currentEnemySpeed(),
       radius: 18,
       color: '#FF3B5C',
@@ -397,14 +436,65 @@
   }
 
   window.addEventListener('keydown', (e) => {
-    // avoid hijacking typing inside any future text inputs/overlays
-    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+    // On touch devices we read characters from the hidden input's `input`
+    // event instead (more reliable for on-screen keyboards), so skip
+    // keydown there to avoid double-counting the same keystroke when a
+    // physical/bluetooth keyboard is also attached.
+    if (isTouchDevice()) return;
+    // avoid hijacking typing inside any *other* text input/overlay
+    if (e.target && e.target.tagName !== 'BODY' &&
+        (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
     handleKeyInput(e.key);
   });
 
   function updateTypedBufferDisplay() {
     typedBufferEl.textContent = currentTyped;
   }
+
+  // ---------- mobile on-screen keyboard support ----------
+  // Many mobile browsers (especially Android/Chrome and some iOS cases)
+  // don't reliably fire normal `keydown` with usable `key` values for
+  // on-screen keyboard taps. The robust cross-platform approach is to
+  // focus a real (but invisible) <input>, which summons the native
+  // keyboard, and read characters from its `input` event instead —
+  // then immediately clear it so it never visibly accumulates text.
+  const mobileCapture = document.getElementById('mobile-key-capture');
+
+  function isTouchDevice() {
+    return ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+  }
+
+  function focusMobileCapture() {
+    if (!isTouchDevice()) return;
+    // slight delay helps some mobile browsers honor focus reliably when
+    // called right after a tap/click that also changed DOM visibility
+    setTimeout(() => {
+      try { mobileCapture.focus({ preventScroll: true }); } catch (_) { mobileCapture.focus(); }
+    }, 50);
+  }
+
+  mobileCapture.addEventListener('input', (e) => {
+    const val = e.target.value;
+    if (val.length > 0) {
+      // handle each typed character in order (normally just one, but
+      // some IME/autocomplete behavior can deliver more than one at once)
+      for (const ch of val) {
+        handleKeyInput(ch);
+      }
+    }
+    // clear immediately so the invisible input never builds up text,
+    // which keeps future `input` events simple (always "what's new")
+    e.target.value = '';
+  });
+
+  // if the capture input loses focus while the game is running (e.g. the
+  // player taps elsewhere, or the keyboard is dismissed), bring it back
+  // so typing keeps working without the player having to do anything
+  mobileCapture.addEventListener('blur', () => {
+    if (running && !gameOverTriggered) {
+      focusMobileCapture();
+    }
+  });
 
   // ---------- projectiles ----------
   // Simple visual traveling shot from player to the target's last known
@@ -433,8 +523,9 @@
       kills += 1;
       score += 10;
     } else {
-      // enemy survives — assign a fresh word so the player has a new prompt
-      enemy.word = randomWord();
+      // enemy survives — assign a fresh word so the player has a new prompt,
+      // avoiding any word currently in play on another alive enemy
+      enemy.word = randomWord(wordsInPlay());
     }
   }
 
@@ -591,6 +682,7 @@
     running = false;
     resetTypedBuffer();
     updateTypedBufferDisplay();
+    mobileCapture.blur(); // dismiss the on-screen keyboard, nothing to type now
 
     goTimeEl.textContent = formatTime(elapsed);
     goScoreEl.textContent = score;
@@ -655,6 +747,10 @@
     if (idleAnimId) cancelAnimationFrame(idleAnimId);
     lastTime = performance.now();
     requestAnimationFrame(gameLoop);
+
+    // on phones/tablets, bring up the on-screen keyboard right away so
+    // the player can start typing without an extra tap
+    focusMobileCapture();
   }
 
   // ---------- start button ----------
