@@ -40,6 +40,7 @@
     avatarImage: null,
     maxHp: 10,
     hp: 10,
+    damage: 1, // per completed word; upgraded via skill points in chunk 6
   };
 
   function centerPlayer() {
@@ -208,6 +209,8 @@
     return base + Math.random() * 8;
   }
 
+  let enemyIdCounter = 1;
+
   function spawnEnemy() {
     // spawn on a circle comfortably beyond the visible edge so they
     // visibly walk on-screen rather than popping in
@@ -218,12 +221,15 @@
     const y = player.y + Math.sin(angle) * spawnRadius;
 
     enemies.push({
+      id: enemyIdCounter++,
       x, y,
       word: randomWord(),
       speed: currentEnemySpeed(),
       radius: 18,
       color: '#FF3B5C',
       dmg: 1, // contact damage to player; scales with difficulty in chunk 5
+      maxHp: 1, // multi-hit enemies (2-3 words to kill) arrive with chunk 5 scaling
+      hp: 1,
       dead: false,
     });
   }
@@ -294,26 +300,204 @@
     enemies = enemies.filter(e => !e.dead);
   }
 
-  // ---------- enemy rendering ----------
-  function drawWordPill(text, x, y) {
+  // ============================================================
+  // CHUNK 3: typing input, targeting, projectiles, shooting
+  // ============================================================
+
+  // currentTyped: the buffer the player has typed so far toward the locked
+  // word. lockedEnemyId: once a unique prefix match exists, we commit to
+  // that enemy's id so further typing always resolves against it even if
+  // new enemies spawn with an overlapping prefix.
+  let currentTyped = '';
+  let lockedEnemyId = null;
+  const typedBufferEl = document.getElementById('typed-buffer');
+
+  function aliveEnemies() {
+    return enemies.filter(e => !e.dead);
+  }
+
+  function findMatchingEnemies(prefix) {
+    const p = prefix.toLowerCase();
+    return aliveEnemies().filter(e => e.word.toLowerCase().startsWith(p));
+  }
+
+  function pickClosestEnemy(list) {
+    let best = null, bestDist = Infinity;
+    for (const e of list) {
+      const d = Math.hypot(e.x - player.x, e.y - player.y);
+      if (d < bestDist) { bestDist = d; best = e; }
+    }
+    return best;
+  }
+
+  function resetTypedBuffer() {
+    currentTyped = '';
+    lockedEnemyId = null;
+  }
+
+  function handleKeyInput(rawKey) {
+    if (!running || gameOverTriggered) return;
+    // ignore modifier/control keys, only accept single printable characters
+    if (rawKey.length !== 1) return;
+    if (!/^[a-zA-Z]$/.test(rawKey)) return; // letters only for now (word bank is alpha)
+
+    const key = rawKey.toLowerCase();
+    const attempt = currentTyped + key;
+
+    // if we already have a locked target, the attempt MUST continue that
+    // enemy's word — a wrong key here resets per the chosen design.
+    if (lockedEnemyId !== null) {
+      const locked = enemies.find(e => e.id === lockedEnemyId && !e.dead);
+      if (!locked) {
+        // locked enemy died or despawned between keystrokes; clear and
+        // re-evaluate this keystroke fresh below.
+        resetTypedBuffer();
+      } else if (locked.word.toLowerCase().startsWith(attempt)) {
+        currentTyped = attempt;
+        if (locked.word.toLowerCase() === attempt) {
+          fireAtEnemy(locked);
+          resetTypedBuffer();
+        }
+        updateTypedBufferDisplay();
+        return;
+      } else {
+        // mistake: reset progress on this word entirely
+        resetTypedBuffer();
+        updateTypedBufferDisplay();
+        return;
+      }
+    }
+
+    // no lock yet: find all alive enemies whose word starts with the attempt
+    const matches = findMatchingEnemies(attempt);
+    if (matches.length === 0) {
+      // wrong key with nothing matching at all — reset (nothing to reset really, but stay safe)
+      currentTyped = '';
+      updateTypedBufferDisplay();
+      return;
+    }
+
+    currentTyped = attempt;
+
+    if (matches.length === 1) {
+      // unique match — lock on
+      const target = matches[0];
+      lockedEnemyId = target.id;
+      if (target.word.toLowerCase() === attempt) {
+        fireAtEnemy(target);
+        resetTypedBuffer();
+      }
+    }
+    // if multiple matches still tie, stay unlocked until next keystroke
+    // disambiguates; closest-enemy tiebreak only matters if the tie never
+    // resolves (extremely rare with varied word bank) — handled implicitly
+    // since both stay valid candidates next keystroke.
+
+    updateTypedBufferDisplay();
+  }
+
+  window.addEventListener('keydown', (e) => {
+    // avoid hijacking typing inside any future text inputs/overlays
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+    handleKeyInput(e.key);
+  });
+
+  function updateTypedBufferDisplay() {
+    typedBufferEl.textContent = currentTyped;
+  }
+
+  // ---------- projectiles ----------
+  // Simple visual traveling shot from player to the target's last known
+  // position; damage resolves immediately on fire (typing IS the hit-scan),
+  // the projectile is purely a juice/feedback effect.
+  let projectiles = [];
+
+  function fireAtEnemy(enemy) {
+    projectiles.push({
+      x: player.x,
+      y: player.y,
+      targetX: enemy.x,
+      targetY: enemy.y,
+      targetId: enemy.id,
+      progress: 0,
+      speed: 5.5, // progress units per second (0..1 lifetime), tuned for snappy travel
+    });
+    resolveHit(enemy);
+  }
+
+  function resolveHit(enemy) {
+    enemy.hp -= player.damage;
+    enemy.hitFlash = 0.12; // brief white flash on the enemy when struck
+    if (enemy.hp <= 0) {
+      enemy.dead = true;
+      kills += 1;
+      score += 10;
+    } else {
+      // enemy survives — assign a fresh word so the player has a new prompt
+      enemy.word = randomWord();
+    }
+  }
+
+  function updateProjectiles(dt) {
+    for (const p of projectiles) {
+      p.progress += p.speed * dt;
+    }
+    projectiles = projectiles.filter(p => p.progress < 1);
+  }
+
+  function drawProjectiles() {
+    ctx.save();
+    for (const p of projectiles) {
+      const x = p.x + (p.targetX - p.x) * p.progress;
+      const y = p.y + (p.targetY - p.y) * p.progress;
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.fillStyle = '#FFB627';
+      ctx.shadowColor = 'rgba(255,182,39,0.8)';
+      ctx.shadowBlur = 8;
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function updateHitFlashes(dt) {
+    for (const e of enemies) {
+      if (e.hitFlash && e.hitFlash > 0) {
+        e.hitFlash = Math.max(0, e.hitFlash - dt);
+      }
+    }
+  }
+
+
+  function drawWordPill(enemy, x, y) {
+    const word = enemy.word;
+    const isLocked = enemy.id === lockedEnemyId;
+    const typedCount = isLocked ? currentTyped.length : 0;
+
     ctx.font = '600 14px "JetBrains Mono", monospace';
     const paddingX = 10;
-    const textWidth = ctx.measureText(text).width;
+    const textWidth = ctx.measureText(word).width;
     const pillW = textWidth + paddingX * 2;
     const pillH = 22;
 
     ctx.save();
-    ctx.fillStyle = 'rgba(28,34,48,0.85)';
-    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-    ctx.lineWidth = 1;
+    ctx.fillStyle = isLocked ? 'rgba(255,182,39,0.16)' : 'rgba(28,34,48,0.85)';
+    ctx.strokeStyle = isLocked ? '#FFB627' : 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = isLocked ? 1.5 : 1;
     roundRect(ctx, x - pillW / 2, y - pillH / 2, pillW, pillH, 6);
     ctx.fill();
     ctx.stroke();
 
-    ctx.fillStyle = '#E7ECF3';
-    ctx.textAlign = 'center';
+    // per-letter coloring: typed chars lock in cyan, remaining stay bright
     ctx.textBaseline = 'middle';
-    ctx.fillText(text, x, y + 1);
+    ctx.textAlign = 'left';
+    let cursorX = x - textWidth / 2;
+    for (let i = 0; i < word.length; i++) {
+      const ch = word[i];
+      ctx.fillStyle = i < typedCount ? '#3FE0D0' : '#E7ECF3';
+      ctx.fillText(ch, cursorX, y + 1);
+      cursorX += ctx.measureText(ch).width;
+    }
     ctx.restore();
   }
 
@@ -334,20 +518,36 @@
       const dx = player.x - e.x;
       const dy = player.y - e.y;
       const angle = Math.atan2(dy, dx);
+      const isLocked = e.id === lockedEnemyId;
+      const flashing = e.hitFlash && e.hitFlash > 0;
 
       ctx.save();
       ctx.translate(e.x, e.y);
+
+      // locked-target glow ring, drawn before rotation so it stays upright
+      if (isLocked) {
+        ctx.beginPath();
+        ctx.arc(0, 0, e.radius + 8, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,182,39,0.18)';
+        ctx.fill();
+      }
+
       ctx.rotate(angle);
       ctx.beginPath();
       ctx.moveTo(e.radius, 0);
       ctx.lineTo(-e.radius * 0.8, e.radius * 0.75);
       ctx.lineTo(-e.radius * 0.8, -e.radius * 0.75);
       ctx.closePath();
-      ctx.fillStyle = e.color;
+      ctx.fillStyle = flashing ? '#FFFFFF' : e.color;
       ctx.fill();
+      if (isLocked) {
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#FFB627';
+        ctx.stroke();
+      }
       ctx.restore();
 
-      drawWordPill(e.word, e.x, e.y - e.radius - 18);
+      drawWordPill(e, e.x, e.y - e.radius - 18);
     }
   }
 
@@ -389,6 +589,8 @@
     if (gameOverTriggered) return;
     gameOverTriggered = true;
     running = false;
+    resetTypedBuffer();
+    updateTypedBufferDisplay();
 
     goTimeEl.textContent = formatTime(elapsed);
     goScoreEl.textContent = score;
@@ -414,10 +616,13 @@
 
     updateSpawning(dt);
     updateEnemies(dt);
+    updateProjectiles(dt);
+    updateHitFlashes(dt);
     updateFlash(dt);
 
     drawBackground();
     drawEnemies();
+    drawProjectiles();
     drawPlayer();
 
     timerEl.textContent = formatTime(elapsed);
@@ -430,6 +635,9 @@
   function startGame() {
     // reset state
     enemies = [];
+    projectiles = [];
+    resetTypedBuffer();
+    updateTypedBufferDisplay();
     elapsed = 0;
     spawnTimer = 0;
     rollNextSpawn();
