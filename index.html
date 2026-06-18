@@ -42,6 +42,7 @@
     position: relative;
     width: 100%;
     height: 100vh;
+    height: var(--app-h, 100vh);
     background:
       radial-gradient(ellipse 120% 80% at 50% 50%, var(--bg) 0%, var(--bg-deep) 100%);
   }
@@ -395,6 +396,28 @@
     z-index: 15;
   }
 
+  /* ---------- mobile keyboard capture input ---------- */
+  /* Positioned on-screen (not display:none/visibility:hidden — both can
+     block focus + keyboard summon on iOS/Android) but made visually
+     invisible: 1px size, no border, transparent, off the visible flow. */
+  #mobile-key-capture {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: 0;
+    border: none;
+    outline: none;
+    opacity: 0;
+    background: transparent;
+    color: transparent;
+    caret-color: transparent;
+    font-size: 16px; /* prevents iOS auto-zoom on focus */
+    z-index: -1;
+  }
+
   @media (max-width: 600px) {
     h1.title { font-size: 38px; }
     #avatar-preview-wrap { width: 88px; height: 88px; }
@@ -430,6 +453,19 @@
     <div class="bb-title">⚠ BOSS INCOMING ⚠</div>
     <div id="boss-hp-wrap"><div id="boss-hp-bar"></div></div>
   </div>
+
+  <!-- Hidden input that summons the mobile on-screen keyboard. Kept in the
+       DOM (not display:none, which some mobile browsers refuse to focus)
+       but visually invisible and non-interactive for layout purposes. -->
+  <input
+    type="text"
+    id="mobile-key-capture"
+    autocomplete="off"
+    autocorrect="off"
+    autocapitalize="off"
+    spellcheck="false"
+    inputmode="text"
+  >
 
   <!-- MENU -->
   <div id="menu-overlay" class="overlay">
