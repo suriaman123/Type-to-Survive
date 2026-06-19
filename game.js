@@ -54,7 +54,6 @@
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', resizeCanvas);
   }
-  resizeCanvas();
 
   // ---------- avatar state ----------
   // avatarImage stays null until the player uploads one; player renders as a
@@ -72,6 +71,13 @@
     player.x = W / 2;
     player.y = H / 2;
   }
+
+  // NOTE: resizeCanvas's first call must happen after `player` is declared
+  // above, since it calls centerPlayer() which reads player.x/y. Calling it
+  // any earlier throws (const player is in its temporal dead zone), which
+  // would silently abort the rest of this script — including the avatar
+  // upload and start button wiring below. Keep this call here.
+  resizeCanvas();
 
   // ---------- avatar upload wiring ----------
   avatarPreviewWrap.addEventListener('click', () => avatarInput.click());
