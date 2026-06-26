@@ -64,7 +64,10 @@
     avatarImage: null,
     maxHp: 10,
     hp: 10,
-    damage: 1, // per completed word; upgraded via skill points in chunk 6
+    damage: 1, // per completed word; upgraded via skill points
+    skillPoints: 0, // banked, unspent points
+    slowFactor: 1, // multiplier applied to enemy speed; Chill Field reduces this
+    skillLevels: { health: 0, damage: 0, slow: 0 },
   };
 
   function centerPlayer() {
@@ -321,7 +324,7 @@
     }
     base = Math.min(base, 160); // hard ceiling
 
-    return base + Math.random() * 8;
+    return (base + Math.random() * 8) * player.slowFactor;
   }
 
   let enemyIdCounter = 1;
@@ -367,6 +370,7 @@
 
   function updateSpawning(dt) {
     elapsed += dt;
+    checkSkillPointAward();
     spawnTimer += dt;
     if (spawnTimer >= nextSpawnIn) {
       spawnTimer = 0;
@@ -375,7 +379,109 @@
     }
   }
 
-  // ---------- player damage state ----------
+  // ============================================================
+  // CHUNK 6: skill points — earned per minute, spent in a paused overlay
+  // ============================================================
+
+  // We award 1 skill point at each whole-minute mark of elapsed survival
+  // time. `lastSkillMinuteAwarded` tracks the last minute boundary we've
+  // already paid out, so we never double-award if a frame's dt straddles
+  // a boundary or the loop briefly stalls.
+  let lastSkillMinuteAwarded = 0;
+  let paused = false; // true while the level-up (or future card-pick) overlay is open
+
+  const levelupOverlay = document.getElementById('levelup-overlay');
+  const spAvailableEl = document.getElementById('sp-available');
+  const spPluralEl = document.getElementById('sp-plural');
+  const levelupContinueBtn = document.getElementById('levelup-continue');
+  const lvlHealthEl = document.getElementById('lvl-health');
+  const lvlDamageEl = document.getElementById('lvl-damage');
+  const lvlSlowEl = document.getElementById('lvl-slow');
+  const spValEl = document.getElementById('sp-val');
+
+  function checkSkillPointAward() {
+    const currentMinute = Math.floor(elapsed / 60);
+    if (currentMinute > lastSkillMinuteAwarded) {
+      lastSkillMinuteAwarded = currentMinute;
+      player.skillPoints += 1;
+      spValEl.textContent = player.skillPoints;
+      openLevelUpOverlay();
+    }
+  }
+
+  function openLevelUpOverlay() {
+    paused = true;
+    spAvailableEl.textContent = player.skillPoints;
+    spPluralEl.textContent = player.skillPoints === 1 ? '' : 's';
+    lvlHealthEl.textContent = player.skillLevels.health;
+    lvlDamageEl.textContent = player.skillLevels.damage;
+    lvlSlowEl.textContent = player.skillLevels.slow;
+    levelupContinueBtn.classList.add('hidden'); // only shown once points are spent down to 0... actually allow continue any time
+    levelupContinueBtn.classList.remove('hidden');
+    hud.classList.add('hidden');
+    levelupOverlay.classList.remove('hidden');
+    mobileCapture.blur(); // no typing needed while choosing a skill
+  }
+
+  function closeLevelUpOverlay() {
+    paused = false;
+    levelupOverlay.classList.add('hidden');
+    hud.classList.remove('hidden');
+    focusMobileCapture();
+    lastTime = performance.now(); // avoid a huge dt spike from time spent paused
+    requestAnimationFrame(gameLoop);
+  }
+
+  function applySkill(skillName) {
+    if (player.skillPoints <= 0) return;
+
+    if (skillName === 'health') {
+      player.maxHp += 2;
+      player.hp = Math.min(player.maxHp, player.hp + 2);
+      player.skillLevels.health += 1;
+      renderHearts();
+    } else if (skillName === 'damage') {
+      player.damage += 1;
+      player.skillLevels.damage += 1;
+    } else if (skillName === 'slow') {
+      // -8% enemy speed, stacking multiplicatively so repeated picks keep
+      // giving a real (if diminishing) benefit rather than flattening out
+      player.slowFactor *= 0.92;
+      player.skillLevels.slow += 1;
+    } else {
+      return;
+    }
+
+    player.skillPoints -= 1;
+    spValEl.textContent = player.skillPoints;
+
+    if (player.skillPoints > 0) {
+      // more points to spend — refresh the overlay's counters and stay open
+      spAvailableEl.textContent = player.skillPoints;
+      spPluralEl.textContent = player.skillPoints === 1 ? '' : 's';
+      lvlHealthEl.textContent = player.skillLevels.health;
+      lvlDamageEl.textContent = player.skillLevels.damage;
+      lvlSlowEl.textContent = player.skillLevels.slow;
+    } else {
+      // all points spent — close automatically and resume play
+      closeLevelUpOverlay();
+    }
+  }
+
+  document.querySelectorAll('.skill-card').forEach(card => {
+    card.addEventListener('click', () => {
+      applySkill(card.dataset.skill);
+    });
+  });
+
+  levelupContinueBtn.addEventListener('click', () => {
+    // lets the player bank remaining points and resume now if they'd
+    // rather not spend everything immediately (kept available for them
+    // at the next minute's overlay since skillPoints persists)
+    closeLevelUpOverlay();
+  });
+
+
   let gameOverTriggered = false;
   let flashTimer = 0; // counts down after a hit, drives the red screen flash
   const dmgFlashEl = document.getElementById('dmg-flash');
@@ -459,7 +565,7 @@
   }
 
   function handleKeyInput(rawKey) {
-    if (!running || gameOverTriggered) return;
+    if (!running || gameOverTriggered || paused) return;
     // ignore modifier/control keys, only accept single printable characters
     if (rawKey.length !== 1) return;
     if (!/^[a-zA-Z]$/.test(rawKey)) return; // letters only for now (word bank is alpha)
@@ -805,6 +911,7 @@
 
   function gameLoop(timestamp) {
     if (!running) return;
+    if (paused) return; // frozen while level-up (or future card-pick) overlay is open; resumed via closeLevelUpOverlay()
     const dt = Math.min(0.05, (timestamp - lastTime) / 1000 || 0); // clamp dt, skip huge jumps
     lastTime = timestamp;
 
@@ -833,17 +940,24 @@
     resetTypedBuffer();
     updateTypedBufferDisplay();
     elapsed = 0;
+    lastSkillMinuteAwarded = 0;
+    paused = false;
     spawnTimer = 0;
     rollNextSpawn();
     centerPlayer();
 
-    player.hp = player.maxHp;
+    player.hp = player.maxHp = 10;
+    player.damage = 1;
+    player.skillPoints = 0;
+    player.slowFactor = 1;
+    player.skillLevels = { health: 0, damage: 0, slow: 0 };
     score = 0;
     kills = 0;
     gameOverTriggered = false;
     flashTimer = 0;
     dmgFlashEl.style.opacity = 0;
     renderHearts();
+    spValEl.textContent = 0;
 
     running = true;
     if (idleAnimId) cancelAnimationFrame(idleAnimId);
