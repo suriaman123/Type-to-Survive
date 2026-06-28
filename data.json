@@ -1,0 +1,89 @@
+{
+  "_comment": "Type to Survive — word & sentence database. Edit freely: add more words to any wordTiers array, or more sentences to any bossSentences array. Tiers unlock over time as the game progresses (see game.js for exact timing); higher tier index = harder/rarer.",
+
+  "wordTiers": [
+    {
+      "_tier": 0,
+      "_note": "first ~1 minute: short, common words",
+      "words": ["cat", "dog", "run", "jump", "fire", "wolf", "rock", "wave"]
+    },
+    {
+      "_tier": 1,
+      "_note": "~1-3 minutes",
+      "words": ["storm", "blade", "shadow", "ember", "frost", "spike", "crawl", "venom"]
+    },
+    {
+      "_tier": 2,
+      "_note": "~3-5 minutes",
+      "words": ["rust", "howl", "grit", "fang", "gnaw", "thorn", "wraith", "molten"]
+    },
+    {
+      "_tier": 3,
+      "_note": "~5-8 minutes",
+      "words": ["scorch", "fracture", "serrated", "glacier", "crimson", "hollow", "tremor"]
+    },
+    {
+      "_tier": 4,
+      "_note": "~8-12 minutes",
+      "words": ["ravenous", "obsidian", "cataclysm", "desolate", "writhing", "malicious"]
+    },
+    {
+      "_tier": 5,
+      "_note": "12+ minutes, longest/rarest",
+      "words": ["annihilate", "reverberate", "incandescent", "subterranean", "malevolence"]
+    }
+  ],
+
+  "bossSentences": [
+    {
+      "_boss": 0,
+      "_note": "first boss at 2:00 — add as many variants as you like, one is picked at random each time",
+      "sentences": [
+        ["the", "storm", "breaks"],
+        ["night", "falls", "fast"],
+        ["fear", "the", "dark"]
+      ]
+    },
+    {
+      "_boss": 1,
+      "_note": "second boss at 4:00",
+      "sentences": [
+        ["shadows", "crawl", "through", "the", "ruins"],
+        ["the", "hunt", "begins", "at", "dusk"],
+        ["embers", "scatter", "across", "the", "field"]
+      ]
+    },
+    {
+      "_boss": 2,
+      "_note": "third boss at 6:00",
+      "sentences": [
+        ["a", "cold", "wind", "howls", "across", "the", "wasteland"],
+        ["the", "ground", "trembles", "with", "every", "heavy", "step"]
+      ]
+    },
+    {
+      "_boss": 3,
+      "_note": "fourth boss at 8:00",
+      "sentences": [
+        ["ancient", "fury", "awakens", "beneath", "the", "shattered", "earth"],
+        ["the", "beast", "rises", "from", "its", "endless", "slumber"]
+      ]
+    },
+    {
+      "_boss": 4,
+      "_note": "fifth boss at 10:00",
+      "sentences": [
+        ["the", "relentless", "darkness", "consumes", "everything", "in", "its", "path"],
+        ["nothing", "survives", "the", "wrath", "of", "the", "forgotten", "king"]
+      ]
+    },
+    {
+      "_boss": 5,
+      "_note": "sixth boss and beyond (this tier repeats for any later boss)",
+      "sentences": [
+        ["only", "the", "desperate", "and", "the", "fearless", "survive", "this", "long"],
+        ["the", "final", "hour", "draws", "near", "and", "no", "one", "is", "spared"]
+      ]
+    }
+  ]
+}
