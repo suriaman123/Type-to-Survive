@@ -1,6 +1,4 @@
 {
-  "_comment": "Type to Survive — word & sentence database. Edit freely: add more words to any wordTiers array, or more sentences to any bossSentences array. Tiers unlock over time as the game progresses (see game.js for exact timing); higher tier index = harder/rarer.",
-
   "wordTiers": [
     {
       "_tier": 0,
