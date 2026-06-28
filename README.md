@@ -57,23 +57,23 @@ After defeating a boss, the player selects a reward card.
 
 ---
 
-## 🃏 Card Reward System
+## Card Reward System
 After each boss, choose **1 of 3 cards**:
 ### Example Cards:
-- 🔥 Extra Fire – faster and multi-hit shots
-- 🔫 New Gun – increased damage
-- 🚀 Auto Rocket – fires every 30 seconds at the nearest enemy
-- ⚡ Time Slow Field – slows enemies periodically
-- ❤️ Regeneration – slowly restores HP
-- 🎯 Critical Typing – chance for double damage
-- 🧲 Magnet Shot – auto-targeting bullets
-- ❄️ Freeze Burst – chance to freeze enemies
+- Extra Fire – faster and multi-hit shots
+- New Gun – increased damage
+- Auto Rocket – fires every 30 seconds at the nearest enemy
+- Time Slow Field – slows enemies periodically
+- Regeneration – slowly restores HP
+- Critical Typing – chance for double damage
+- Magnet Shot – auto-targeting bullets
+- Freeze Burst – chance to freeze enemies
 
 Only one card can be selected.
 
 ---
 
-## 📊 Difficulty Scaling
+## Difficulty Scaling
 Every minute:
 - Word difficulty increases
 - Enemy HP increases
@@ -88,7 +88,7 @@ Every minute:
 
 ---
 
-## 🏁 Game Over
+## Game Over
 The game ends when:
 - HP reaches 0
 - Player quits the game
