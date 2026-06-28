@@ -251,6 +251,12 @@
   }
   .btn:hover { transform: translateY(-2px) scale(1.02); box-shadow: 0 6px 24px rgba(255,182,39,0.35); }
   .btn:active { transform: translateY(0) scale(0.98); }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+    transform: none !important;
+    box-shadow: none !important;
+  }
   .btn.btn-ghost {
     background: transparent;
     color: var(--text);
@@ -527,6 +533,16 @@
       <div><b id="go-kills">0</b>ENEMIES DOWNED</div>
     </div>
     <button class="btn" id="restart-btn">PLAY AGAIN</button>
+  </div>
+
+  <!-- PAUSE (ESC) -->
+  <div id="pause-overlay" class="overlay hidden">
+    <h2>PAUSED</h2>
+    <p class="subtitle" id="pause-note" style="display:none;">
+      The game is already paused for a level-up or boss reward — resume that first, then ESC again to pause normally.
+    </p>
+    <button class="btn" id="pause-resume-btn">RESUME</button>
+    <button class="btn btn-ghost" id="pause-quit-btn">RETURN TO MAIN MENU</button>
   </div>
 </div>
 
