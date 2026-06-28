@@ -209,20 +209,48 @@
   // get longer and less common. The active tier widens over time so easy
   // words keep showing up too (avoids an abrupt jump), but harder words
   // mix in increasingly.
-  const WORD_TIERS = [
-    // tier 0 — first ~1 minute: short, common
-    ['cat', 'dog', 'run', 'jump', 'fire', 'wolf', 'rock', 'wave'],
-    // tier 1 — ~1-3 min
-    ['storm', 'blade', 'shadow', 'ember', 'frost', 'spike', 'crawl', 'venom'],
-    // tier 2 — ~3-5 min
-    ['rust', 'howl', 'grit', 'fang', 'gnaw', 'thorn', 'wraith', 'molten'],
-    // tier 3 — ~5-8 min
-    ['scorch', 'fracture', 'serrated', 'glacier', 'crimson', 'hollow', 'tremor'],
-    // tier 4 — ~8-12 min
-    ['ravenous', 'obsidian', 'cataclysm', 'desolate', 'writhing', 'malicious'],
-    // tier 5 — 12+ min, longest/rarest
-    ['annihilate', 'reverberate', 'incandescent', 'subterranean', 'malevolence'],
+  //
+  // The actual word/sentence content now lives in data.json (fetched
+  // below) so the word/sentence database can be expanded just by editing
+  // that file — no code changes needed. WORD_TIERS/BOSS_SENTENCES start
+  // as a small built-in fallback and get replaced once the fetch resolves,
+  // so the game still works (with a limited word set) if data.json is
+  // unreachable for any reason (offline file:// usage, network hiccup).
+  let WORD_TIERS = [
+    ['cat', 'dog', 'run', 'jump'],
+    ['storm', 'blade', 'shadow', 'ember'],
   ];
+  // BOSS_SENTENCES is now an array of arrays-of-sentences: each tier can
+  // hold multiple sentence variants, and one is picked at random each time
+  // a boss at that tier spawns (see sentenceForBoss below), so replaying
+  // doesn't always show the exact same sentence.
+  let BOSS_SENTENCES = [
+    [['the', 'storm', 'breaks']],
+  ];
+  let gameDataLoaded = false;
+
+  function loadGameData() {
+    return fetch('data.json')
+      .then(res => {
+        if (!res.ok) throw new Error('data.json fetch failed: ' + res.status);
+        return res.json();
+      })
+      .then(data => {
+        if (Array.isArray(data.wordTiers) && data.wordTiers.length > 0) {
+          WORD_TIERS = data.wordTiers.map(tier => tier.words);
+        }
+        if (Array.isArray(data.bossSentences) && data.bossSentences.length > 0) {
+          BOSS_SENTENCES = data.bossSentences.map(tier => tier.sentences);
+        }
+        gameDataLoaded = true;
+      })
+      .catch(err => {
+        // fall back to the small built-in word lists above; log for
+        // debugging but don't block the game from being playable
+        console.warn('Could not load data.json, using built-in fallback word list.', err);
+        gameDataLoaded = true;
+      });
+  }
 
   function currentMaxWordTier() {
     // unlock a new tier roughly every 2 minutes, capped at the last tier
@@ -276,6 +304,360 @@
     // human-readable difficulty tier for the HUD, purely informational
     return Math.floor(elapsed / 60) + 1; // "level" ticks up once per minute
   }
+
+  // ============================================================
+  // CHUNK 7: boss fights — every 2 minutes, type a full sentence to kill
+  // ============================================================
+
+  // Sentences tiered by boss index (0 = first boss at 2:00, 1 = second at
+  // 4:00, etc.), growing in word count and word length as boss number
+  // increases per the game's request. Capped to the last tier for very
+  // long runs so it never becomes unreasonably long.
+  // (BOSS_SENTENCES itself is declared above near WORD_TIERS, populated by
+  // loadGameData() from data.json.)
+
+  function sentenceForBoss(bossIndex) {
+    const tier = Math.min(bossIndex, BOSS_SENTENCES.length - 1);
+    const variants = BOSS_SENTENCES[tier];
+    const pick = variants[Math.floor(Math.random() * variants.length)];
+    return pick;
+  }
+
+  let bossActive = false;
+  let boss = null; // { x, y, radius, words, wordIndex, typedInWord, bossIndex }
+  let bossIndex = 0; // increments each boss fight, used to pick sentence tier
+  let lastBossMinuteTriggered = -1; // tracks which 2-minute mark we've already spawned a boss for
+
+  const bossBanner = document.getElementById('boss-banner');
+  const bossHpBar = document.getElementById('boss-hp-bar');
+
+  function checkBossSpawn() {
+    if (bossActive) return;
+    const twoMinBlock = Math.floor(elapsed / 120);
+    if (twoMinBlock > 0 && twoMinBlock > lastBossMinuteTriggered) {
+      lastBossMinuteTriggered = twoMinBlock;
+      spawnBoss();
+    }
+  }
+
+  function spawnBoss() {
+    bossActive = true;
+    // clear the field so the boss is the sole focus, per the chosen design
+    enemies = [];
+    resetTypedBuffer();
+    updateTypedBufferDisplay();
+
+    const words = sentenceForBoss(bossIndex).slice();
+    // boss moves slower than a regular enemy at this point in the run, but
+    // hits twice as hard on contact, per the chosen design
+    const regularSpeed = currentEnemySpeed();
+    boss = {
+      x: player.x,
+      y: player.y - Math.min(W, H) * 0.32, // enters from the top-center area
+      radius: 46,
+      words: words,
+      wordIndex: 0,
+      typedInWord: '',
+      speed: regularSpeed * 0.55,
+      dmg: currentEnemyContactDamage() * 2,
+    };
+
+    bossBanner.classList.remove('hidden');
+    updateBossHpBar();
+  }
+
+  function updateBoss(dt) {
+    if (!boss) return;
+    const dx = player.x - boss.x;
+    const dy = player.y - boss.y;
+    const dist = Math.hypot(dx, dy);
+
+    if (dist <= player.radius + boss.radius) {
+      // boss reaches the player: deals its (doubled) contact damage, then
+      // the fight ends immediately with no card reward, per the chosen
+      // design — this is a real threat to respect, not just a typing puzzle
+      takeDamage(boss.dmg);
+      bossActive = false;
+      boss = null;
+      bossBanner.classList.add('hidden');
+      resetTypedBuffer();
+      updateTypedBufferDisplay();
+      return;
+    }
+
+    const vx = (dx / dist) * boss.speed;
+    const vy = (dy / dist) * boss.speed;
+    boss.x += vx * dt;
+    boss.y += vy * dt;
+  }
+
+  function updateBossHpBar() {
+    if (!boss) return;
+    const total = boss.words.length;
+    const remaining = total - boss.wordIndex;
+    const pct = Math.max(0, (remaining / total) * 100);
+    bossHpBar.style.width = pct + '%';
+  }
+
+  function handleBossKeyInput(rawKey) {
+    if (!boss) return;
+
+    if (rawKey === 'Backspace') {
+      if (boss.typedInWord.length > 0) {
+        boss.typedInWord = boss.typedInWord.slice(0, -1);
+        updateTypedBufferDisplay();
+      }
+      return;
+    }
+
+    // sentences need letters AND the space between words; we accept a
+    // literal space keypress to advance only if the current word is
+    // already fully typed (prevents accidentally skipping mid-word)
+    if (rawKey === ' ') {
+      const word = boss.words[boss.wordIndex];
+      if (boss.typedInWord.toLowerCase() === word.toLowerCase()) {
+        advanceBossWord();
+      }
+      return;
+    }
+    if (rawKey.length !== 1 || !/^[a-zA-Z]$/.test(rawKey)) return;
+
+    const word = boss.words[boss.wordIndex].toLowerCase();
+    const attempt = (boss.typedInWord + rawKey).toLowerCase();
+
+    if (word.startsWith(attempt)) {
+      boss.typedInWord += rawKey.toLowerCase();
+      if (boss.typedInWord.toLowerCase() === word) {
+        // word complete — auto-advance immediately rather than waiting on
+        // a space press, so a fluent typer can flow straight through
+        advanceBossWord();
+        return;
+      }
+    } else {
+      // mistake: per the chosen design, only this word's progress resets,
+      // not the whole sentence
+      boss.typedInWord = '';
+    }
+    updateTypedBufferDisplay();
+  }
+
+  function advanceBossWord() {
+    boss.wordIndex += 1;
+    boss.typedInWord = '';
+    updateBossHpBar();
+    updateTypedBufferDisplay();
+    if (boss.wordIndex >= boss.words.length) {
+      defeatBoss();
+    }
+  }
+
+  function defeatBoss() {
+    bossActive = false;
+    bossIndex += 1;
+    score += 100; // flat bonus for clearing a boss
+    boss = null;
+    bossBanner.classList.add('hidden');
+    resetTypedBuffer();
+    updateTypedBufferDisplay();
+    openCardPickOverlay();
+  }
+
+  // ============================================================
+  // CHUNK 7 (cont.): card rewards — pick 1 of 3 after each boss kill
+  // ============================================================
+
+  // Each card has a unique id, display info, and an `apply` function run
+  // once when chosen. Effects are simple counters/flags on `player` that
+  // other systems (projectiles, auto-fire ticking, contact resolution)
+  // check — this keeps the reward system additive and stackable without
+  // needing a big rework of the existing shooting/combat code.
+  const CARD_POOL = [
+    {
+      id: 'extra_fire',
+      icon: '🔥',
+      name: 'Extra Fire',
+      desc: 'Your shots ignite enemies, dealing burn damage over time.',
+      apply: () => { player.hasFireRounds = true; },
+    },
+    {
+      id: 'twin_shot',
+      icon: '⚔',
+      name: 'Twin Shot',
+      desc: 'Each completed word also fires a bonus shot at the next nearest enemy.',
+      apply: () => { player.hasTwinShot = true; },
+    },
+    {
+      id: 'auto_rocket',
+      icon: '🚀',
+      name: 'Auto Rocket',
+      desc: 'Every 30s, automatically fires a rocket at the nearest enemy.',
+      apply: () => {
+        player.hasAutoRocket = true;
+        if (!player.autoRocketInterval) player.autoRocketInterval = 30;
+      },
+    },
+    {
+      id: 'vampiric_rounds',
+      icon: '🩸',
+      name: 'Vampiric Rounds',
+      desc: 'Kills have a 10% chance to heal you for 1 HP.',
+      apply: () => { player.vampiricChance = (player.vampiricChance || 0) + 0.10; },
+    },
+    {
+      id: 'shield_charge',
+      icon: '🛡',
+      name: 'Shield Charge',
+      desc: 'Every 60s, gain a shield that blocks the next contact hit.',
+      apply: () => {
+        player.hasShieldCharge = true;
+        if (!player.shieldChargeInterval) player.shieldChargeInterval = 60;
+      },
+    },
+    {
+      id: 'quick_hands',
+      icon: '⚡',
+      name: 'Quick Hands',
+      desc: 'Completed words deal a bonus burst of +1 damage.',
+      apply: () => { player.damage += 1; },
+    },
+    {
+      id: 'slipstream',
+      icon: '✦',
+      name: 'Slipstream',
+      desc: 'Slowly regenerate 1 HP every 45 seconds.',
+      apply: () => {
+        player.hasRegen = true;
+        if (!player.regenInterval) player.regenInterval = 45;
+      },
+    },
+    {
+      id: 'piercing_word',
+      icon: '➳',
+      name: 'Piercing Word',
+      desc: 'Your shots pierce through to hit a second enemy behind the first.',
+      apply: () => { player.hasPiercing = true; },
+    },
+    {
+      id: 'overclock',
+      icon: '⏱',
+      name: 'Overclock',
+      desc: 'Reduces Auto Rocket cooldown (only useful if you own one).',
+      apply: () => {
+        player.autoRocketInterval = Math.max(10, (player.autoRocketInterval || 30) - 8);
+      },
+    },
+  ];
+
+  const cardPickOverlay = document.getElementById('cardpick-overlay');
+  const cardGridEl = document.getElementById('card-grid');
+
+  function rollThreeCards() {
+    const pool = CARD_POOL.slice();
+    const picked = [];
+    while (picked.length < 3 && pool.length > 0) {
+      const idx = Math.floor(Math.random() * pool.length);
+      picked.push(pool.splice(idx, 1)[0]);
+    }
+    return picked;
+  }
+
+  function openCardPickOverlay() {
+    paused = true;
+    cardGridEl.innerHTML = '';
+
+    const choices = rollThreeCards();
+    for (const card of choices) {
+      const el = document.createElement('div');
+      el.className = 'pick-card';
+      el.innerHTML = `
+        <div class="icon">${card.icon}</div>
+        <div class="name">${card.name}</div>
+        <div class="desc">${card.desc}</div>
+      `;
+      el.addEventListener('click', () => {
+        card.apply();
+        closeCardPickOverlay();
+      });
+      cardGridEl.appendChild(el);
+    }
+
+    hud.classList.add('hidden');
+    cardPickOverlay.classList.remove('hidden');
+    mobileCapture.blur();
+  }
+
+  function closeCardPickOverlay() {
+    paused = false;
+    cardPickOverlay.classList.add('hidden');
+    hud.classList.remove('hidden');
+    focusMobileCapture();
+    lastTime = performance.now(); // avoid a huge dt spike from time spent paused
+    requestAnimationFrame(gameLoop);
+  }
+
+  function drawBoss() {
+    if (!boss) return;
+    const word = boss.words[boss.wordIndex] || '';
+    const typedCount = boss.typedInWord.length;
+
+    // body: larger flat shape, distinct from regular enemies (diamond)
+    ctx.save();
+    ctx.translate(boss.x, boss.y);
+    ctx.beginPath();
+    ctx.moveTo(0, -boss.radius);
+    ctx.lineTo(boss.radius, 0);
+    ctx.lineTo(0, boss.radius);
+    ctx.lineTo(-boss.radius, 0);
+    ctx.closePath();
+    ctx.fillStyle = '#FF3B5C';
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#FFB627';
+    ctx.stroke();
+    ctx.restore();
+
+    // current word pill above the boss, same per-letter coloring language
+    // as regular enemies for visual consistency
+    ctx.font = '700 16px "JetBrains Mono", monospace';
+    const paddingX = 12;
+    const textWidth = ctx.measureText(word).width;
+    const pillW = textWidth + paddingX * 2;
+    const pillH = 26;
+    const px = boss.x, py = boss.y - boss.radius - 24;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,182,39,0.18)';
+    ctx.strokeStyle = '#FFB627';
+    ctx.lineWidth = 1.5;
+    roundRect(ctx, px - pillW / 2, py - pillH / 2, pillW, pillH, 7);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    let cursorX = px - textWidth / 2;
+    for (let i = 0; i < word.length; i++) {
+      const ch = word[i];
+      ctx.fillStyle = i < typedCount ? '#3FE0D0' : '#E7ECF3';
+      ctx.fillText(ch, cursorX, py + 1);
+      cursorX += ctx.measureText(ch).width;
+    }
+    ctx.restore();
+
+    // small "next words" preview beneath the current word, dimmed, so the
+    // player can see the sentence they're working through
+    const upcoming = boss.words.slice(boss.wordIndex + 1).join(' ');
+    if (upcoming) {
+      ctx.save();
+      ctx.font = '500 12px "JetBrains Mono", monospace';
+      ctx.fillStyle = 'rgba(231,236,243,0.35)';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(upcoming, boss.x, boss.y - boss.radius - 46);
+      ctx.restore();
+    }
+  }
+
 
   // ---------- enemy entity ----------
   // Each enemy: { x, y, word, speed, radius, color, dead }
@@ -371,6 +753,8 @@
   function updateSpawning(dt) {
     elapsed += dt;
     checkSkillPointAward();
+    checkBossSpawn();
+    if (bossActive) return; // no regular spawning while a boss fight is on
     spawnTimer += dt;
     if (spawnTimer >= nextSpawnIn) {
       spawnTimer = 0;
@@ -488,11 +872,66 @@
 
   function takeDamage(amount) {
     if (gameOverTriggered) return;
+
+    // Shield Charge: consume an available shield charge to block this hit
+    // entirely instead of taking damage
+    if (player.shieldCharges && player.shieldCharges > 0) {
+      player.shieldCharges -= 1;
+      flashTimer = 0.15; // brief, lighter flash so a block still feels eventful
+      return;
+    }
+
     player.hp = Math.max(0, player.hp - amount);
     flashTimer = 0.35; // seconds the flash stays visible, fades out
     renderHearts();
     if (player.hp <= 0) {
       triggerGameOver();
+    }
+  }
+
+  // ---------- card-driven periodic effects ----------
+  // Auto Rocket, Shield Charge recharge, and Slipstream regen all tick on
+  // their own timers independent of typing. Timers only run once their
+  // respective card has been picked (flag set to true by CARD_POOL.apply).
+  function updateTimedEffects(dt) {
+    if (player.hasAutoRocket) {
+      player.autoRocketTimer = (player.autoRocketTimer || 0) + dt;
+      const interval = player.autoRocketInterval || 30;
+      if (player.autoRocketTimer >= interval) {
+        player.autoRocketTimer = 0;
+        const target = pickClosestEnemy(aliveEnemies());
+        if (target) {
+          resolveHit(target);
+          // a slightly heavier visual than a regular shot, reusing the
+          // same projectile renderer for simplicity
+          projectiles.push({
+            x: player.x, y: player.y,
+            targetX: target.x, targetY: target.y,
+            targetId: target.id, progress: 0, speed: 3.2,
+          });
+        }
+      }
+    }
+
+    if (player.hasShieldCharge) {
+      player.shieldChargeTimer = (player.shieldChargeTimer || 0) + dt;
+      const interval = player.shieldChargeInterval || 60;
+      if (player.shieldChargeTimer >= interval) {
+        player.shieldChargeTimer = 0;
+        player.shieldCharges = Math.min(1, (player.shieldCharges || 0) + 1);
+      }
+    }
+
+    if (player.hasRegen) {
+      player.regenTimer = (player.regenTimer || 0) + dt;
+      const interval = player.regenInterval || 45;
+      if (player.regenTimer >= interval) {
+        player.regenTimer = 0;
+        if (player.hp < player.maxHp) {
+          player.hp += 1;
+          renderHearts();
+        }
+      }
     }
   }
 
@@ -509,6 +948,19 @@
   function updateEnemies(dt) {
     for (const e of enemies) {
       if (e.dead) continue;
+
+      // Extra Fire: burn ticks independent of contact/typing damage
+      if (e.burnTime && e.burnTime > 0) {
+        e.burnTime -= dt;
+        e.hp -= e.burnDps * dt;
+        if (e.hp <= 0) {
+          e.dead = true;
+          kills += 1;
+          score += 10;
+          continue;
+        }
+      }
+
       const dx = player.x - e.x;
       const dy = player.y - e.y;
       const dist = Math.hypot(dx, dy);
@@ -566,6 +1018,36 @@
 
   function handleKeyInput(rawKey) {
     if (!running || gameOverTriggered || paused) return;
+
+    if (bossActive) {
+      handleBossKeyInput(rawKey);
+      return;
+    }
+
+    if (rawKey === 'Backspace') {
+      if (currentTyped.length === 0) return;
+      currentTyped = currentTyped.slice(0, -1);
+      if (currentTyped.length === 0) {
+        // nothing left typed — fully clear the lock too
+        lockedEnemyId = null;
+      } else if (lockedEnemyId !== null) {
+        // still have a lock: only keep it if the locked enemy's word still
+        // starts with the shortened buffer (it always will, since we only
+        // ever removed a character — kept here for safety/clarity)
+        const locked = enemies.find(e => e.id === lockedEnemyId && !e.dead);
+        if (!locked || !locked.word.toLowerCase().startsWith(currentTyped)) {
+          lockedEnemyId = null;
+        }
+      } else {
+        // no lock yet (was still disambiguating) — re-check if the
+        // shortened buffer now uniquely matches one enemy
+        const matches = findMatchingEnemies(currentTyped);
+        if (matches.length === 1) lockedEnemyId = matches[0].id;
+      }
+      updateTypedBufferDisplay();
+      return;
+    }
+
     // ignore modifier/control keys, only accept single printable characters
     if (rawKey.length !== 1) return;
     if (!/^[a-zA-Z]$/.test(rawKey)) return; // letters only for now (word bank is alpha)
@@ -634,11 +1116,20 @@
     // avoid hijacking typing inside any *other* text input/overlay
     if (e.target && e.target.tagName !== 'BODY' &&
         (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+    // space normally scrolls the page, and backspace can navigate the
+    // browser back in some browsers when focus isn't on a text field —
+    // both are used for gameplay, so stop their default behavior while
+    // actively playing
+    if ((e.key === ' ' || e.key === 'Backspace') && running && !paused) e.preventDefault();
     handleKeyInput(e.key);
   });
 
   function updateTypedBufferDisplay() {
-    typedBufferEl.textContent = currentTyped;
+    if (bossActive && boss) {
+      typedBufferEl.textContent = boss.typedInWord;
+    } else {
+      typedBufferEl.textContent = currentTyped;
+    }
   }
 
   // ---------- mobile on-screen keyboard support ----------
@@ -664,6 +1155,16 @@
   }
 
   mobileCapture.addEventListener('input', (e) => {
+    // mobile on-screen keyboards report a backspace press as a
+    // deleteContentBackward inputType with an empty resulting value
+    // (since we keep the field cleared) — detect that explicitly, since
+    // the length-based check below would otherwise miss it entirely.
+    if (e.inputType === 'deleteContentBackward') {
+      handleKeyInput('Backspace');
+      e.target.value = '';
+      return;
+    }
+
     const val = e.target.value;
     if (val.length > 0) {
       // handle each typed character in order (normally just one, but
@@ -692,7 +1193,7 @@
   // the projectile is purely a juice/feedback effect.
   let projectiles = [];
 
-  function fireAtEnemy(enemy) {
+  function fireAtEnemy(enemy, isBonusShot) {
     projectiles.push({
       x: player.x,
       y: player.y,
@@ -703,15 +1204,56 @@
       speed: 5.5, // progress units per second (0..1 lifetime), tuned for snappy travel
     });
     resolveHit(enemy);
+
+    // Piercing Word: the same shot also strikes one enemy roughly behind
+    // the target from the player's point of view, simulated here as just
+    // hitting the next-closest alive enemy past this one (full geometric
+    // raycast isn't necessary for the effect to read as "piercing")
+    if (player.hasPiercing) {
+      const dx = enemy.x - player.x, dy = enemy.y - player.y;
+      const dist = Math.hypot(dx, dy);
+      const behind = aliveEnemies()
+        .filter(e => e.id !== enemy.id)
+        .find(e => {
+          const ex = e.x - player.x, ey = e.y - player.y;
+          const edist = Math.hypot(ex, ey);
+          // roughly same direction and farther away than the primary target
+          const dot = (dx * ex + dy * ey) / (dist * edist || 1);
+          return dot > 0.85 && edist > dist;
+        });
+      if (behind) resolveHit(behind);
+    }
+
+    // Twin Shot: bonus shot at the next nearest *other* enemy, skipped for
+    // the bonus shot itself so it can't chain infinitely
+    if (player.hasTwinShot && !isBonusShot) {
+      const others = aliveEnemies().filter(e => e.id !== enemy.id);
+      const next = pickClosestEnemy(others);
+      if (next) fireAtEnemy(next, true);
+    }
   }
 
   function resolveHit(enemy) {
     enemy.hp -= player.damage;
     enemy.hitFlash = 0.12; // brief white flash on the enemy when struck
+
+    // Extra Fire: a small burn-over-time effect that ticks independently
+    // in updateEnemies, so just flag duration/damage here
+    if (player.hasFireRounds) {
+      enemy.burnTime = 1.5; // seconds remaining
+      enemy.burnDps = Math.max(1, Math.round(player.damage * 0.4));
+    }
+
     if (enemy.hp <= 0) {
       enemy.dead = true;
       kills += 1;
       score += 10;
+
+      // Vampiric Rounds: chance-based heal on kill
+      if (player.vampiricChance && Math.random() < player.vampiricChance) {
+        player.hp = Math.min(player.maxHp, player.hp + 1);
+        renderHearts();
+      }
     } else {
       // enemy survives — assign a fresh word so the player has a new prompt,
       // avoiding any word currently in play on another alive enemy
@@ -906,6 +1448,106 @@
     hud.classList.remove('hidden');
     startGame();
   });
+  // ============================================================
+  // ESC pause menu — separate from the level-up/card "paused" state.
+  // Reuses the same `paused` flag to actually freeze the game loop, but
+  // tracks its own overlay/visibility and a distinct reason so it doesn't
+  // fight with the level-up/card flow.
+  // ============================================================
+
+  const pauseOverlay = document.getElementById('pause-overlay');
+  const pauseNoteEl = document.getElementById('pause-note');
+  const pauseResumeBtn = document.getElementById('pause-resume-btn');
+  const pauseQuitBtn = document.getElementById('pause-quit-btn');
+
+  let escPaused = false; // true only when the ESC menu itself caused the pause
+
+  function openPauseMenu() {
+    if (!running || gameOverTriggered) return;
+
+    if (paused && !escPaused) {
+      // a level-up or card-pick overlay is already open and driving the
+      // pause; per the chosen design we surface a small note rather than
+      // stacking another overlay on top of it
+      pauseNoteEl.style.display = 'block';
+      pauseResumeBtn.classList.add('hidden');
+      pauseQuitBtn.classList.add('hidden');
+      pauseOverlay.classList.remove('hidden');
+      hud.classList.add('hidden');
+      return;
+    }
+
+    if (paused) return; // ESC pause already open, ignore repeat presses
+
+    escPaused = true;
+    paused = true;
+    pauseNoteEl.style.display = 'none';
+    pauseResumeBtn.classList.remove('hidden');
+    pauseQuitBtn.classList.remove('hidden');
+    pauseOverlay.classList.remove('hidden');
+    hud.classList.add('hidden');
+    mobileCapture.blur();
+  }
+
+  function closePauseMenu(resumeGame) {
+    pauseOverlay.classList.add('hidden');
+
+    if (!escPaused) {
+      // we were just showing the "already paused elsewhere" note — closing
+      // it should simply uncover whichever overlay was actually driving
+      // the pause (level-up or card-pick), not touch game state
+      if (paused) {
+        // the underlying overlay (level-up/card-pick) is still open and
+        // remains the user's responsibility to resolve
+      }
+      return;
+    }
+
+    escPaused = false;
+    if (resumeGame) {
+      paused = false;
+      hud.classList.remove('hidden');
+      focusMobileCapture();
+      lastTime = performance.now(); // avoid a huge dt spike from time spent paused
+      requestAnimationFrame(gameLoop);
+    }
+    // if not resuming, returnToMainMenu() (called separately) handles
+    // tearing the run down entirely
+  }
+
+  function returnToMainMenu() {
+    running = false;
+    paused = false;
+    escPaused = false;
+    pauseOverlay.classList.add('hidden');
+    hud.classList.add('hidden');
+    mobileCapture.blur();
+    menuOverlay.classList.remove('hidden');
+    idleLoop(); // resume the calm menu-background animation
+  }
+
+  pauseResumeBtn.addEventListener('click', () => closePauseMenu(true));
+  pauseQuitBtn.addEventListener('click', () => returnToMainMenu());
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (!running) return; // no-op on the main menu / game-over screen
+
+    const pauseOverlayOpen = !pauseOverlay.classList.contains('hidden');
+
+    if (pauseOverlayOpen && escPaused) {
+      // ESC again while our own pause menu is open: resume
+      closePauseMenu(true);
+    } else if (pauseOverlayOpen && !escPaused) {
+      // ESC again while only the "already paused elsewhere" note is
+      // showing: dismiss the note, leaving the underlying level-up/card
+      // overlay exactly as it was
+      closePauseMenu(false);
+    } else {
+      openPauseMenu();
+    }
+  });
+
   let running = false;
   let lastTime = 0;
 
@@ -917,13 +1559,16 @@
 
     updateSpawning(dt);
     updateEnemies(dt);
+    updateBoss(dt);
     updateProjectiles(dt);
     updateHitFlashes(dt);
+    if (!bossActive) updateTimedEffects(dt); // auto rocket/shield/regen pause during boss fights, matching no-regular-spawns rule
     updateFlash(dt);
 
     drawBackground();
     drawEnemies();
     drawProjectiles();
+    drawBoss();
     drawPlayer();
 
     timerEl.textContent = formatTime(elapsed);
@@ -946,11 +1591,36 @@
     rollNextSpawn();
     centerPlayer();
 
+    // boss state
+    bossActive = false;
+    boss = null;
+    bossIndex = 0;
+    lastBossMinuteTriggered = -1;
+    bossBanner.classList.add('hidden');
+
     player.hp = player.maxHp = 10;
     player.damage = 1;
     player.skillPoints = 0;
     player.slowFactor = 1;
     player.skillLevels = { health: 0, damage: 0, slow: 0 };
+
+    // card effect flags/timers — fully cleared so a fresh run starts with
+    // no carried-over rewards from a previous playthrough
+    player.hasFireRounds = false;
+    player.hasTwinShot = false;
+    player.hasAutoRocket = false;
+    player.autoRocketInterval = 30;
+    player.autoRocketTimer = 0;
+    player.vampiricChance = 0;
+    player.hasShieldCharge = false;
+    player.shieldChargeInterval = 60;
+    player.shieldChargeTimer = 0;
+    player.shieldCharges = 0;
+    player.hasRegen = false;
+    player.regenInterval = 45;
+    player.regenTimer = 0;
+    player.hasPiercing = false;
+
     score = 0;
     kills = 0;
     gameOverTriggered = false;
@@ -970,7 +1640,19 @@
   }
 
   // ---------- start button ----------
+  // Disabled until the word/sentence data finishes loading from data.json,
+  // so a very slow connection can't let someone start before any words
+  // exist to type. In the very common case this resolves almost
+  // instantly (small local JSON file).
+  startBtn.disabled = true;
+  startBtn.textContent = 'LOADING...';
+  loadGameData().then(() => {
+    startBtn.disabled = false;
+    startBtn.textContent = 'START';
+  });
+
   startBtn.addEventListener('click', () => {
+    if (!gameDataLoaded) return; // guard against a stray click slipping through before disabled state applied
     menuOverlay.classList.add('hidden');
     hud.classList.remove('hidden');
     startGame();
