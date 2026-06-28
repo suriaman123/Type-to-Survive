@@ -31,7 +31,7 @@ The game runs indefinitely until the player dies or quits.
 
 ---
 
-## 📈 Progression System
+## Progression System
 Every minute:
 - +1 Skill Point awarded
 
