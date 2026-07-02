@@ -348,8 +348,9 @@
     updateTypedBufferDisplay();
 
     const words = sentenceForBoss(bossIndex).slice();
-    // boss moves slower than a regular enemy at this point in the run, but
-    // hits twice as hard on contact, per the chosen design
+    // boss moves much slower than a regular enemy at this point in the
+    // run — it's meant to give plenty of time to type the sentence, with
+    // contact only as a real-but-distant threat, not constant pressure
     const regularSpeed = currentEnemySpeed();
     boss = {
       x: player.x,
@@ -358,12 +359,13 @@
       words: words,
       wordIndex: 0,
       typedInWord: '',
-      speed: regularSpeed * 0.55,
+      speed: regularSpeed * 0.15,
       dmg: currentEnemyContactDamage() * 2,
     };
 
     bossBanner.classList.remove('hidden');
     updateBossHpBar();
+    soundBossAppear();
   }
 
   function updateBoss(dt) {
@@ -427,16 +429,14 @@
 
     if (word.startsWith(attempt)) {
       boss.typedInWord += rawKey.toLowerCase();
+      soundTypingTick();
       if (boss.typedInWord.toLowerCase() === word) {
-        // word complete — auto-advance immediately rather than waiting on
-        // a space press, so a fluent typer can flow straight through
         advanceBossWord();
         return;
       }
     } else {
-      // mistake: per the chosen design, only this word's progress resets,
-      // not the whole sentence
       boss.typedInWord = '';
+      soundMistake();
     }
     updateTypedBufferDisplay();
   }
@@ -446,6 +446,7 @@
     boss.typedInWord = '';
     updateBossHpBar();
     updateTypedBufferDisplay();
+    soundBossWordComplete();
     if (boss.wordIndex >= boss.words.length) {
       defeatBoss();
     }
@@ -454,7 +455,9 @@
   function defeatBoss() {
     bossActive = false;
     bossIndex += 1;
-    score += 100; // flat bonus for clearing a boss
+    score += 100;
+    soundBossDefeated();
+    if (boss) spawnKillParticles(boss.x, boss.y, '#FFB627');
     boss = null;
     bossBanner.classList.add('hidden');
     resetTypedBuffer();
@@ -597,8 +600,6 @@
 
   function drawBoss() {
     if (!boss) return;
-    const word = boss.words[boss.wordIndex] || '';
-    const typedCount = boss.typedInWord.length;
 
     // body: larger flat shape, distinct from regular enemies (diamond)
     ctx.save();
@@ -616,46 +617,83 @@
     ctx.stroke();
     ctx.restore();
 
-    // current word pill above the boss, same per-letter coloring language
-    // as regular enemies for visual consistency
-    ctx.font = '700 16px "JetBrains Mono", monospace';
-    const paddingX = 12;
-    const textWidth = ctx.measureText(word).width;
-    const pillW = textWidth + paddingX * 2;
-    const pillH = 26;
-    const px = boss.x, py = boss.y - boss.radius - 24;
+    // Full sentence rendered as one continuous pill above the boss:
+    // completed words solid cyan, the current word shows live per-letter
+    // progress (typed chars cyan, untyped bright), remaining words dim.
+    // This replaces the old current-word-only + separate dim-preview
+    // layout so the whole sentence is visible at a glance throughout.
+    // Font size shrinks for longer sentences / narrower screens so the
+    // whole line still fits comfortably without overflowing the canvas.
+    const maxPillWidth = Math.min(W * 0.92, 760);
+    let fontSize = 15;
+    ctx.font = `600 ${fontSize}px "JetBrains Mono", monospace`;
+    const spaceWidthAt = (size) => { ctx.font = `600 ${size}px "JetBrains Mono", monospace`; return ctx.measureText(' ').width; };
+    const sentenceWidthAt = (size) => {
+      ctx.font = `600 ${size}px "JetBrains Mono", monospace`;
+      const sw = ctx.measureText(' ').width;
+      let total = 0;
+      for (let i = 0; i < boss.words.length; i++) {
+        total += ctx.measureText(boss.words[i]).width;
+        if (i < boss.words.length - 1) total += sw;
+      }
+      return total;
+    };
+    while (fontSize > 9 && sentenceWidthAt(fontSize) + 28 > maxPillWidth) {
+      fontSize -= 1;
+    }
+    ctx.font = `600 ${fontSize}px "JetBrains Mono", monospace`;
+    const spaceWidth = ctx.measureText(' ').width;
+
+    // pre-measure total width across all words + spaces so we can center
+    // the whole sentence as a single block above the boss
+    let totalWidth = 0;
+    const wordWidths = boss.words.map(w => ctx.measureText(w).width);
+    wordWidths.forEach((w, i) => {
+      totalWidth += w;
+      if (i < boss.words.length - 1) totalWidth += spaceWidth;
+    });
+
+    const paddingX = 14;
+    const pillW = totalWidth + paddingX * 2;
+    const pillH = 28;
+    const px = boss.x;
+    const py = Math.max(pillH / 2 + 10, boss.y - boss.radius - 26);
 
     ctx.save();
-    ctx.fillStyle = 'rgba(255,182,39,0.18)';
+    ctx.fillStyle = 'rgba(255,182,39,0.16)';
     ctx.strokeStyle = '#FFB627';
     ctx.lineWidth = 1.5;
-    roundRect(ctx, px - pillW / 2, py - pillH / 2, pillW, pillH, 7);
+    roundRect(ctx, px - pillW / 2, py - pillH / 2, pillW, pillH, 8);
     ctx.fill();
     ctx.stroke();
 
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
-    let cursorX = px - textWidth / 2;
-    for (let i = 0; i < word.length; i++) {
-      const ch = word[i];
-      ctx.fillStyle = i < typedCount ? '#3FE0D0' : '#E7ECF3';
-      ctx.fillText(ch, cursorX, py + 1);
-      cursorX += ctx.measureText(ch).width;
+    let cursorX = px - totalWidth / 2;
+
+    for (let wi = 0; wi < boss.words.length; wi++) {
+      const w = boss.words[wi];
+      if (wi < boss.wordIndex) {
+        // already-completed word: fully locked in
+        ctx.fillStyle = '#3FE0D0';
+        ctx.fillText(w, cursorX, py + 1);
+      } else if (wi === boss.wordIndex) {
+        // current word: per-letter progress, same language as regular enemies
+        const typedCount = boss.typedInWord.length;
+        let charX = cursorX;
+        for (let ci = 0; ci < w.length; ci++) {
+          ctx.fillStyle = ci < typedCount ? '#3FE0D0' : '#E7ECF3';
+          ctx.fillText(w[ci], charX, py + 1);
+          charX += ctx.measureText(w[ci]).width;
+        }
+      } else {
+        // not yet reached: dimmed
+        ctx.fillStyle = 'rgba(231,236,243,0.4)';
+        ctx.fillText(w, cursorX, py + 1);
+      }
+      cursorX += wordWidths[wi] + spaceWidth;
     }
     ctx.restore();
-
-    // small "next words" preview beneath the current word, dimmed, so the
-    // player can see the sentence they're working through
-    const upcoming = boss.words.slice(boss.wordIndex + 1).join(' ');
-    if (upcoming) {
-      ctx.save();
-      ctx.font = '500 12px "JetBrains Mono", monospace';
-      ctx.fillStyle = 'rgba(231,236,243,0.35)';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(upcoming, boss.x, boss.y - boss.radius - 46);
-      ctx.restore();
-    }
   }
 
 
@@ -873,16 +911,17 @@
   function takeDamage(amount) {
     if (gameOverTriggered) return;
 
-    // Shield Charge: consume an available shield charge to block this hit
-    // entirely instead of taking damage
     if (player.shieldCharges && player.shieldCharges > 0) {
       player.shieldCharges -= 1;
-      flashTimer = 0.15; // brief, lighter flash so a block still feels eventful
+      flashTimer = 0.15;
+      triggerShake(3, 0.12); // light shake even on block, feels responsive
       return;
     }
 
     player.hp = Math.max(0, player.hp - amount);
-    flashTimer = 0.35; // seconds the flash stays visible, fades out
+    flashTimer = 0.35;
+    triggerShake(amount >= 2 ? 10 : 6, 0.28); // bigger shake for boss hits
+    soundDamage();
     renderHearts();
     if (player.hp <= 0) {
       triggerGameOver();
@@ -1060,11 +1099,10 @@
     if (lockedEnemyId !== null) {
       const locked = enemies.find(e => e.id === lockedEnemyId && !e.dead);
       if (!locked) {
-        // locked enemy died or despawned between keystrokes; clear and
-        // re-evaluate this keystroke fresh below.
         resetTypedBuffer();
       } else if (locked.word.toLowerCase().startsWith(attempt)) {
         currentTyped = attempt;
+        soundTypingTick();
         if (locked.word.toLowerCase() === attempt) {
           fireAtEnemy(locked);
           resetTypedBuffer();
@@ -1072,26 +1110,25 @@
         updateTypedBufferDisplay();
         return;
       } else {
-        // mistake: reset progress on this word entirely
         resetTypedBuffer();
+        soundMistake();
         updateTypedBufferDisplay();
         return;
       }
     }
 
-    // no lock yet: find all alive enemies whose word starts with the attempt
     const matches = findMatchingEnemies(attempt);
     if (matches.length === 0) {
-      // wrong key with nothing matching at all — reset (nothing to reset really, but stay safe)
       currentTyped = '';
+      soundMistake();
       updateTypedBufferDisplay();
       return;
     }
 
     currentTyped = attempt;
+    soundTypingTick();
 
     if (matches.length === 1) {
-      // unique match — lock on
       const target = matches[0];
       lockedEnemyId = target.id;
       if (target.word.toLowerCase() === attempt) {
@@ -1099,10 +1136,6 @@
         resetTypedBuffer();
       }
     }
-    // if multiple matches still tie, stay unlocked until next keystroke
-    // disambiguates; closest-enemy tiebreak only matters if the tie never
-    // resolves (extremely rare with varied word bank) — handled implicitly
-    // since both stay valid candidates next keystroke.
 
     updateTypedBufferDisplay();
   }
@@ -1235,28 +1268,27 @@
 
   function resolveHit(enemy) {
     enemy.hp -= player.damage;
-    enemy.hitFlash = 0.12; // brief white flash on the enemy when struck
+    enemy.hitFlash = 0.12;
 
-    // Extra Fire: a small burn-over-time effect that ticks independently
-    // in updateEnemies, so just flag duration/damage here
     if (player.hasFireRounds) {
-      enemy.burnTime = 1.5; // seconds remaining
+      enemy.burnTime = 1.5;
       enemy.burnDps = Math.max(1, Math.round(player.damage * 0.4));
     }
 
     if (enemy.hp <= 0) {
       enemy.dead = true;
       kills += 1;
-      score += 10;
+      // combo + score (registerKill adds the points, so don't add separately)
+      registerKill(enemy.x, enemy.y);
+      // particles burst from enemy death position
+      spawnKillParticles(enemy.x, enemy.y, '#FF3B5C');
+      soundKill();
 
-      // Vampiric Rounds: chance-based heal on kill
       if (player.vampiricChance && Math.random() < player.vampiricChance) {
         player.hp = Math.min(player.maxHp, player.hp + 1);
         renderHearts();
       }
     } else {
-      // enemy survives — assign a fresh word so the player has a new prompt,
-      // avoiding any word currently in play on another alive enemy
       enemy.word = randomWord(wordsInPlay());
     }
   }
@@ -1418,11 +1450,51 @@
   let kills = 0;
   const scoreValEl = document.getElementById('score-val');
 
-  // ---------- game over ----------
-  const gameOverOverlay = document.getElementById('gameover-overlay');
+  // ============================================================
+  // PERSISTENCE — best time and best score saved via localStorage.
+  // Uses a single key 'tts:best' storing a small JSON object so
+  // both values are read/written atomically.
+  // ============================================================
+
+  const STORAGE_KEY = 'tts:best';
+  const bestTimeEl = document.getElementById('best-time');
+  const bestScoreEl = document.getElementById('best-score');
+
+  function loadBest() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return { time: 0, score: 0 };
+      const parsed = JSON.parse(raw);
+      return {
+        time: typeof parsed.time === 'number' ? parsed.time : 0,
+        score: typeof parsed.score === 'number' ? parsed.score : 0,
+      };
+    } catch (_) {
+      return { time: 0, score: 0 };
+    }
+  }
+
+  function saveBest(time, score) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ time, score }));
+    } catch (_) {
+      // localStorage blocked (private mode, quota exceeded, etc.) — silently no-op
+    }
+  }
+
+  function updateBestDisplay() {
+    const best = loadBest();
+    bestTimeEl.textContent = best.time > 0 ? formatTime(best.time) : '--:--';
+    bestScoreEl.textContent = best.score > 0 ? best.score : '---';
+  }
+
+  // populate the menu's best-stats display immediately on load
+  updateBestDisplay();
+
   const goTimeEl = document.getElementById('go-time');
   const goScoreEl = document.getElementById('go-score');
   const goKillsEl = document.getElementById('go-kills');
+  const gameOverOverlay = document.getElementById('gameover-overlay');
   const restartBtn = document.getElementById('restart-btn');
   const newBestTag = document.getElementById('new-best-tag');
 
@@ -1430,14 +1502,35 @@
     if (gameOverTriggered) return;
     gameOverTriggered = true;
     running = false;
+    soundGameOver();
     resetTypedBuffer();
     updateTypedBufferDisplay();
-    mobileCapture.blur(); // dismiss the on-screen keyboard, nothing to type now
+    mobileCapture.blur();
 
     goTimeEl.textContent = formatTime(elapsed);
     goScoreEl.textContent = score;
     goKillsEl.textContent = kills;
-    newBestTag.classList.add('hidden'); // best-score comparison lands with persistence chunk
+
+    // compare against saved best and update if this run beats either record
+    const best = loadBest();
+    const newBestTime = elapsed > best.time;
+    const newBestScore = score > best.score;
+    const isNewBest = newBestTime || newBestScore;
+
+    if (isNewBest) {
+      saveBest(
+        newBestTime ? elapsed : best.time,
+        newBestScore ? score : best.score,
+      );
+      newBestTag.classList.remove('hidden');
+      document.getElementById('gameover-stats').classList.add('new-best');
+    } else {
+      newBestTag.classList.add('hidden');
+      document.getElementById('gameover-stats').classList.remove('new-best');
+    }
+
+    // refresh menu display so returning to main menu shows the updated record
+    updateBestDisplay();
 
     hud.classList.add('hidden');
     gameOverOverlay.classList.remove('hidden');
@@ -1447,6 +1540,12 @@
     gameOverOverlay.classList.add('hidden');
     hud.classList.remove('hidden');
     startGame();
+  });
+
+  const gameOverHomeBtn = document.getElementById('gameover-home-btn');
+  gameOverHomeBtn.addEventListener('click', () => {
+    gameOverOverlay.classList.add('hidden');
+    returnToMainMenu();
   });
   // ============================================================
   // ESC pause menu — separate from the level-up/card "paused" state.
@@ -1548,13 +1647,249 @@
     }
   });
 
-  let running = false;
-  let lastTime = 0;
+  // ============================================================
+  // POLISH: kill particles, screen shake, combo multiplier, Web Audio
+  // ============================================================
+
+  // ---------- Web Audio sound engine ----------
+  let audioCtx = null;
+
+  function getAudioCtx() {
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    // resume if suspended (browsers require user gesture first)
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    return audioCtx;
+  }
+
+  function playTone({ freq = 440, freq2 = null, type = 'sine', gain = 0.18,
+                      attack = 0.005, decay = 0.08, duration = 0.1,
+                      noiseAmount = 0, pitchDrop = 0 } = {}) {
+    try {
+      const ctx = getAudioCtx();
+      const now = ctx.currentTime;
+      const master = ctx.createGain();
+      master.gain.setValueAtTime(0, now);
+      master.gain.linearRampToValueAtTime(gain, now + attack);
+      master.gain.exponentialRampToValueAtTime(0.0001, now + attack + decay);
+      master.connect(ctx.destination);
+
+      const osc = ctx.createOscillator();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, now);
+      if (freq2) osc.frequency.linearRampToValueAtTime(freq2, now + attack + decay);
+      if (pitchDrop) osc.frequency.exponentialRampToValueAtTime(
+        Math.max(20, freq - pitchDrop), now + attack + decay);
+      osc.connect(master);
+      osc.start(now);
+      osc.stop(now + duration);
+
+      if (noiseAmount > 0) {
+        const bufLen = ctx.sampleRate * duration;
+        const buf = ctx.createBuffer(1, bufLen, ctx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < bufLen; i++) data[i] = (Math.random() * 2 - 1) * noiseAmount;
+        const noise = ctx.createBufferSource();
+        noise.buffer = buf;
+        noise.connect(master);
+        noise.start(now);
+        noise.stop(now + duration);
+      }
+    } catch (_) { /* audio failures are silent */ }
+  }
+
+  function soundTypingTick() {
+    playTone({ freq: 880 + Math.random() * 220, type: 'square',
+               gain: 0.04, attack: 0.001, decay: 0.018, duration: 0.022 });
+  }
+  function soundKill() {
+    playTone({ freq: 520, freq2: 740, type: 'triangle',
+               gain: 0.22, attack: 0.004, decay: 0.12, duration: 0.14 });
+  }
+  function soundMistake() {
+    playTone({ freq: 220, type: 'sawtooth',
+               gain: 0.08, attack: 0.002, decay: 0.06, duration: 0.07,
+               noiseAmount: 0.3 });
+  }
+  function soundDamage() {
+    playTone({ freq: 180, type: 'sawtooth', pitchDrop: 120,
+               gain: 0.28, attack: 0.001, decay: 0.18, duration: 0.2,
+               noiseAmount: 0.5 });
+  }
+  function soundBossAppear() {
+    // rising tension sting: two stacked oscillators
+    playTone({ freq: 120, freq2: 200, type: 'sawtooth',
+               gain: 0.18, attack: 0.05, decay: 0.55, duration: 0.65 });
+    playTone({ freq: 180, freq2: 260, type: 'square',
+               gain: 0.09, attack: 0.08, decay: 0.45, duration: 0.6 });
+  }
+  function soundBossDefeated() {
+    // ascending triumphant chord — three notes staggered
+    [0, 80, 180].forEach((delay, i) => {
+      setTimeout(() => {
+        playTone({ freq: [523, 659, 784][i], type: 'triangle',
+                   gain: 0.20, attack: 0.01, decay: 0.35, duration: 0.4 });
+      }, delay);
+    });
+  }
+  function soundGameOver() {
+    [0, 120, 260].forEach((delay, i) => {
+      setTimeout(() => {
+        playTone({ freq: [400, 300, 180][i], type: 'sawtooth',
+                   gain: 0.18, attack: 0.01, decay: 0.28, duration: 0.35,
+                   noiseAmount: 0.15 });
+      }, delay);
+    });
+  }
+  function soundBossWordComplete() {
+    playTone({ freq: 660, type: 'triangle',
+               gain: 0.14, attack: 0.003, decay: 0.09, duration: 0.1 });
+  }
+
+  // ---------- kill particles ----------
+  let particles = [];
+
+  function spawnKillParticles(x, y, color) {
+    const count = 10;
+    for (let i = 0; i < count; i++) {
+      const angle = (Math.PI * 2 / count) * i + Math.random() * 0.4;
+      const speed = 60 + Math.random() * 90;
+      particles.push({
+        x, y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        radius: 2.5 + Math.random() * 3,
+        color,
+        alpha: 1,
+        life: 0.35 + Math.random() * 0.15, // seconds total lifetime
+        age: 0,
+      });
+    }
+  }
+
+  function updateParticles(dt) {
+    for (const p of particles) {
+      p.age += dt;
+      const t = p.age / p.life; // 0..1
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      // drag
+      p.vx *= 1 - dt * 4;
+      p.vy *= 1 - dt * 4;
+      p.alpha = Math.max(0, 1 - t);
+    }
+    particles = particles.filter(p => p.age < p.life);
+  }
+
+  function drawParticles() {
+    ctx.save();
+    for (const p of particles) {
+      ctx.globalAlpha = p.alpha;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+      ctx.fillStyle = p.color;
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  // ---------- screen shake ----------
+  let shakeTimer = 0;
+  let shakeMag = 0;
+  let shakeX = 0, shakeY = 0;
+
+  function triggerShake(magnitude, duration) {
+    // keep the stronger shake if one is already running
+    if (magnitude > shakeMag || shakeTimer <= 0) {
+      shakeMag = magnitude;
+    }
+    shakeTimer = Math.max(shakeTimer, duration);
+  }
+
+  function updateShake(dt) {
+    if (shakeTimer <= 0) { shakeX = 0; shakeY = 0; return; }
+    shakeTimer = Math.max(0, shakeTimer - dt);
+    const intensity = shakeMag * (shakeTimer > 0 ? 1 : 0);
+    shakeX = (Math.random() * 2 - 1) * intensity;
+    shakeY = (Math.random() * 2 - 1) * intensity;
+  }
+
+  // ---------- combo multiplier ----------
+  let combo = 0;
+  let comboTimer = 0;
+  const COMBO_WINDOW = 2.2; // seconds between kills to keep the chain alive
+  let comboPopups = []; // brief on-screen combo flash
+
+  function registerKill(x, y) {
+    comboTimer = COMBO_WINDOW;
+    combo += 1;
+    const multiplier = Math.max(1, combo);
+    const points = 10 * multiplier;
+    score += points;
+
+    if (combo >= 2) {
+      // show a combo popup near the kill
+      comboPopups.push({
+        x, y: y - 30,
+        text: `×${combo} COMBO  +${points}`,
+        age: 0,
+        life: 0.9,
+      });
+    } else {
+      // single kill — no popup, just score
+      comboPopups.push({
+        x, y: y - 24,
+        text: `+${points}`,
+        age: 0,
+        life: 0.6,
+      });
+    }
+  }
+
+  function updateCombo(dt) {
+    if (comboTimer > 0) {
+      comboTimer -= dt;
+      if (comboTimer <= 0) combo = 0;
+    }
+    for (const p of comboPopups) p.age += dt;
+    comboPopups = comboPopups.filter(p => p.age < p.life);
+  }
+
+  function drawComboPopups() {
+    ctx.save();
+    for (const p of comboPopups) {
+      const t = p.age / p.life;
+      const alpha = Math.max(0, 1 - t * t);
+      const yOff = -t * 28; // floats upward
+      ctx.globalAlpha = alpha;
+      ctx.font = `700 ${combo >= 2 ? 16 : 13}px "JetBrains Mono", monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = combo >= 2 ? '#FFB627' : '#3FE0D0';
+      ctx.fillText(p.text, p.x, p.y + yOff);
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  function updateComboHud() {
+    if (combo >= 2) {
+      waveInfoEl.textContent = `×${combo} COMBO  |  lvl ${currentDifficultyLabel()} · enemies: ${enemies.length}`;
+      waveInfoEl.style.color = '#FFB627';
+    } else {
+      waveInfoEl.textContent = `lvl ${currentDifficultyLabel()} · enemies: ${enemies.length}`;
+      waveInfoEl.style.color = '';
+    }
+  }
+
+
 
   function gameLoop(timestamp) {
     if (!running) return;
-    if (paused) return; // frozen while level-up (or future card-pick) overlay is open; resumed via closeLevelUpOverlay()
-    const dt = Math.min(0.05, (timestamp - lastTime) / 1000 || 0); // clamp dt, skip huge jumps
+    if (paused) return;
+    const dt = Math.min(0.05, (timestamp - lastTime) / 1000 || 0);
     lastTime = timestamp;
 
     updateSpawning(dt);
@@ -1562,26 +1897,45 @@
     updateBoss(dt);
     updateProjectiles(dt);
     updateHitFlashes(dt);
-    if (!bossActive) updateTimedEffects(dt); // auto rocket/shield/regen pause during boss fights, matching no-regular-spawns rule
+    updateParticles(dt);
+    updateShake(dt);
+    updateCombo(dt);
+    if (!bossActive) updateTimedEffects(dt);
     updateFlash(dt);
+
+    // apply screen shake as a canvas translation before all draw calls,
+    // then reset afterward so HUD/overlays are never affected
+    ctx.save();
+    ctx.translate(shakeX, shakeY);
 
     drawBackground();
     drawEnemies();
     drawProjectiles();
     drawBoss();
+    drawParticles();
+    drawComboPopups();
     drawPlayer();
+
+    ctx.restore(); // end screen shake transform
 
     timerEl.textContent = formatTime(elapsed);
     scoreValEl.textContent = score;
-    waveInfoEl.textContent = `lvl ${currentDifficultyLabel()} · enemies: ${enemies.length}`;
+    updateComboHud();
 
     requestAnimationFrame(gameLoop);
   }
 
   function startGame() {
-    // reset state
     enemies = [];
     projectiles = [];
+    particles = [];
+    comboPopups = [];
+    combo = 0;
+    comboTimer = 0;
+    shakeTimer = 0;
+    shakeMag = 0;
+    shakeX = 0;
+    shakeY = 0;
     resetTypedBuffer();
     updateTypedBufferDisplay();
     elapsed = 0;
